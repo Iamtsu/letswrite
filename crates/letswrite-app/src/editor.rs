@@ -501,11 +501,7 @@ fn status_bar(snapshot: EditorSnapshot) -> Element<'static, Message> {
     let path = snapshot.rel_path.unwrap_or_else(|| "(no file)".to_owned());
     let dirty_marker = if snapshot.is_dirty { "●" } else { " " };
     let cursor =
-        // "Ln/Col" is misleading for prose: text_editor reports the
-        // logical line (split on \n), so wrapping a long paragraph
-        // doesn't change Ln but Col keeps climbing. ¶ + Ch makes the
-        // semantics obvious: "paragraph N, character K within it".
-        format!("¶ {}, Ch {}", snapshot.cursor_line + 1, snapshot.cursor_column + 1);
+        format!("Ln {}, Col {}", snapshot.cursor_line + 1, snapshot.cursor_column + 1);
     let words = format!("{} words", snapshot.word_count);
     container(
         row![
