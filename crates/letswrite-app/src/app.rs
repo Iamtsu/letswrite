@@ -146,7 +146,11 @@ impl App {
                 self.persist_ratios_from_layout();
                 Task::none()
             }
-            Message::Editor(msg) => self.editor.update(msg).map(Message::Editor),
+            Message::Editor(msg) => {
+                let task = self.editor.update(msg).map(Message::Editor);
+                self.refresh_entities_in_scene();
+                task
+            }
             Message::Sidebar(msg) => self.handle_sidebar_message(msg),
             Message::Assistant(msg) => self.handle_assistant_message(msg),
             Message::CycleSyntaxTheme => {
@@ -270,6 +274,7 @@ impl App {
                 // available immediately. Cheap for normal-sized projects;
                 // moves to a background task only if we hit slowness later.
                 self.run_import();
+                self.refresh_entities_in_scene();
                 Task::done(Message::Sidebar(sidebar::Message::ProjectLoaded {
                     root,
                     name,
@@ -309,6 +314,11 @@ impl App {
             }
         }
         task
+    }
+
+    fn refresh_entities_in_scene(&mut self) {
+        let context = self.build_assistant_context();
+        self.assistant.set_entities_in_scene(context.entities_in_scene);
     }
 
     fn build_assistant_context(&self) -> AssistantContext {

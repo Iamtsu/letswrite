@@ -13,7 +13,9 @@ use iced::futures::{SinkExt, Stream, StreamExt};
 use iced::widget::{button, column, container, markdown, row, scrollable, text, text_input};
 use iced::{Element, Length, Task, Theme};
 
-use letswrite_ai::{Agent, AgentEvent, AgentInput, AssistantContext, ProviderError};
+use letswrite_ai::{
+    Agent, AgentEvent, AgentInput, AssistantContext, EntityInScene, ProviderError,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::presets::BUILT_INS;
@@ -43,11 +45,19 @@ pub(crate) enum TurnState {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Tab {
+    Chat,
+    Characters,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     InputChanged(String),
     Submit,
     Cancel,
+    /// User switched between chat and the in-scene character list.
+    TabSelected(Tab),
     /// User picked a preset; fill the composer + tag the next submit.
     PresetSelected(&'static str),
     /// Streamed event from the agent. The `turn` index identifies which
@@ -83,6 +93,11 @@ pub(crate) struct Assistant {
     api_key_draft: String,
     /// `true` if the configured provider needs a credential we don't have.
     needs_api_key: bool,
+    /// Which tab is showing.
+    tab: Tab,
+    /// Characters present in the current scene; refreshed on each
+    /// assistant interaction (the context-builder query already runs).
+    entities_in_scene: Vec<EntityInScene>,
 }
 
 impl Assistant {
@@ -95,7 +110,15 @@ impl Assistant {
             in_flight: None,
             api_key_draft: String::new(),
             needs_api_key,
+            tab: Tab::Chat,
+            entities_in_scene: Vec::new(),
         }
+    }
+
+    /// Refresh the characters-in-scene list (called by the shell when the
+    /// editor's snapshot changes or context is rebuilt).
+    pub(crate) fn set_entities_in_scene(&mut self, entities: Vec<EntityInScene>) {
+        self.entities_in_scene = entities;
     }
 
     pub(crate) fn set_agent(&mut self, agent: Option<Arc<dyn Agent>>, needs_api_key: bool) {
@@ -145,6 +168,10 @@ impl Assistant {
                 }
                 Task::none()
             }
+            Message::TabSelected(tab) => {
+                self.tab = tab;
+                Task::none()
+            }
             Message::ApiKeyChanged(s) => {
                 self.api_key_draft = s;
                 Task::none()
@@ -172,23 +199,34 @@ impl Assistant {
             col = col.push(text("(Set your Anthropic API key to enable the assistant.)").size(11));
         }
 
-        // Transcript scrollable.
-        let mut transcript = column![].spacing(12).width(Length::Fill);
-        for turn in &self.turns {
-            transcript = transcript.push(render_turn(turn));
+        col = col.push(tab_bar(self.tab, self.entities_in_scene.len()));
+
+        match self.tab {
+            Tab::Chat => {
+                let mut transcript = column![].spacing(12).width(Length::Fill);
+                for turn in &self.turns {
+                    transcript = transcript.push(render_turn(turn));
+                }
+                col = col.push(
+                    scrollable(transcript)
+                        .height(Length::Fill)
+                        .width(Length::Fill),
+                );
+                col = col.push(preset_toolbar(self.pending_preset));
+                col = col.push(composer_row(
+                    &self.draft,
+                    self.in_flight.is_some(),
+                    self.agent.is_some(),
+                ));
+            }
+            Tab::Characters => {
+                col = col.push(
+                    scrollable(characters_view(&self.entities_in_scene))
+                        .height(Length::Fill)
+                        .width(Length::Fill),
+                );
+            }
         }
-        col = col.push(
-            scrollable(transcript)
-                .height(Length::Fill)
-                .width(Length::Fill),
-        );
-
-        // Preset toolbar.
-        col = col.push(preset_toolbar(self.pending_preset));
-
-        // Composer.
-        let composer = composer_row(&self.draft, self.in_flight.is_some(), self.agent.is_some());
-        col = col.push(composer);
 
         container(col)
             .width(Length::Fill)
@@ -290,6 +328,66 @@ fn api_key_prompt(draft: &str) -> Element<'_, Message> {
             .style(button::primary),
     ]
     .spacing(4)
+    .into()
+}
+
+fn tab_bar(active: Tab, character_count: usize) -> Element<'static, Message> {
+    let chat_style = if active == Tab::Chat { button::primary } else { button::secondary };
+    let chars_style = if active == Tab::Characters { button::primary } else { button::secondary };
+    let chars_label = if character_count > 0 {
+        format!("In scene ({character_count})")
+    } else {
+        "In scene".to_owned()
+    };
+    container(
+        iced::widget::Row::new()
+            .spacing(4)
+            .push(
+                button(text("Chat").size(12))
+                    .style(chat_style)
+                    .on_press(Message::TabSelected(Tab::Chat)),
+            )
+            .push(
+                button(text(chars_label).size(12))
+                    .style(chars_style)
+                    .on_press(Message::TabSelected(Tab::Characters)),
+            ),
+    )
+    .into()
+}
+
+fn characters_view(entities: &[EntityInScene]) -> Element<'_, Message> {
+    if entities.is_empty() {
+        return column![
+            text("No characters detected in the current scene.").size(12),
+            text(
+                "Wiki-link a character (e.g. `[[Evan Calder]]`) or place the cursor in a scene \
+                 that already mentions one.",
+            )
+            .size(11),
+        ]
+        .spacing(6)
+        .into();
+    }
+    let mut col = column![].spacing(8);
+    for entity in entities {
+        col = col.push(render_entity_card(entity));
+    }
+    col.into()
+}
+
+fn render_entity_card(entity: &EntityInScene) -> Element<'_, Message> {
+    container(
+        column![
+            text(entity.name.clone()).size(13),
+            text(entity.kind.clone()).size(10),
+            text(entity.current_state.clone()).size(11),
+        ]
+        .spacing(2),
+    )
+    .padding(8)
+    .style(assistant_bubble_style)
+    .width(Length::Fill)
     .into()
 }
 
