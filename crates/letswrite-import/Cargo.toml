@@ -11,6 +11,11 @@ workspace = true
 [dependencies]
 letswrite-core.workspace = true
 serde = { workspace = true }
+serde_json.workspace = true
 serde_yaml.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+rusqlite.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -56,9 +56,13 @@ enum Dialog {
 pub(crate) enum Message {
     /// User asked to pick a project directory.
     PickProject,
-    /// Result of the file-picker future.
+    /// Result of the file-picker future. Handled by the app shell, which
+    /// opens the project and then fires [`Self::ProjectLoaded`] with the
+    /// real scan back into us.
     ProjectPicked(Option<PathBuf>),
-    /// The app shell finished opening a project and gives us the scan.
+    /// Shell-only: the app finished opening a project and is handing us
+    /// the scan to populate the tree. The sidebar never emits this on its
+    /// own — only the shell does — so this is a one-way ingress.
     ProjectLoaded {
         root: PathBuf,
         name: String,
@@ -92,6 +96,8 @@ pub(crate) enum Message {
 pub(crate) struct SidebarReaction {
     /// File to open in the editor (after rename, this points at the new path).
     pub open: Option<PathBuf>,
+    /// User picked a folder — shell should open it as a project.
+    pub open_project: Option<PathBuf>,
     /// Filesystem mutated — app should reindex and re-scan.
     pub fs_changed: bool,
     /// Async task to run (e.g. the file picker future). `Task` doesn't
@@ -101,7 +107,12 @@ pub(crate) struct SidebarReaction {
 
 impl Default for SidebarReaction {
     fn default() -> Self {
-        Self { open: None, fs_changed: false, task: Task::none() }
+        Self {
+            open: None,
+            open_project: None,
+            fs_changed: false,
+            task: Task::none(),
+        }
     }
 }
 
@@ -109,6 +120,7 @@ impl std::fmt::Debug for SidebarReaction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SidebarReaction")
             .field("open", &self.open)
+            .field("open_project", &self.open_project)
             .field("fs_changed", &self.fs_changed)
             .finish_non_exhaustive()
     }
@@ -148,16 +160,12 @@ impl Sidebar {
             }
             Message::ProjectPicked(None) => SidebarReaction::default(),
             Message::ProjectPicked(Some(path)) => {
-                // App shell takes over: opens the project, scans, sends back
-                // ProjectLoaded. The reaction carries no task, just a marker
-                // that the shell should pick this up via the dedicated
-                // pick-result message in app.rs.
+                // The shell observes the pick via [`SidebarReaction::open_project`]
+                // — we do NOT fire a follow-up message here because that would
+                // bounce back through `Sidebar::update` and either no-op or
+                // (worse) loop forever.
                 SidebarReaction {
-                    task: Task::done(Message::ProjectLoaded {
-                        root: path.clone(),
-                        name: project_name_from_path(&path),
-                        scan: Vec::new(), // populated by the shell after init
-                    }),
+                    open_project: Some(path),
                     ..Default::default()
                 }
             }
@@ -465,11 +473,6 @@ const fn folder_label(kind: DocumentKind) -> &'static str {
     kind.folder()
 }
 
-fn project_name_from_path(path: &Path) -> String {
-    path.file_name()
-        .and_then(|s| s.to_str())
-        .map_or_else(|| path.display().to_string(), str::to_owned)
-}
 
 /// Minimal Markdown stub for a freshly created document. Includes YAML
 /// frontmatter so it round-trips cleanly through `letswrite_core::Document`.

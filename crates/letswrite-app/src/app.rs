@@ -193,14 +193,11 @@ impl App {
     }
 
     fn handle_sidebar_message(&mut self, msg: sidebar::Message) -> Task<Message> {
-        // Special-case the picker result: the sidebar fires
-        // ProjectLoaded with an empty scan; we substitute the real scan
-        // after opening the project here in the shell.
-        if let sidebar::Message::ProjectLoaded { root, .. } = &msg {
-            return self.open_project(root.clone());
-        }
         let reaction = self.sidebar.update(msg);
         let mut tasks: Vec<Task<Message>> = Vec::new();
+        if let Some(root) = reaction.open_project {
+            tasks.push(self.open_project(root));
+        }
         if reaction.fs_changed {
             if let Some(project) = self.project.as_mut() {
                 if let Err(err) = project.reindex() {
