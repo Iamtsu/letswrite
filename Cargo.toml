@@ -74,8 +74,16 @@ notify-debouncer-full = "0.4"
 directories = "5"
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 
-# Credentials
-keyring = "3"
+# Credentials. Without an explicit backend feature, keyring v3 ships a
+# stub backend on Linux that silently no-ops set_password and returns
+# None from get_password — burned us once already. Pick a backend per
+# platform.
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "sync-secret-service",
+    "crypto-rust",
+] }
 
 # Text utilities
 unicode-segmentation = "1"

@@ -564,13 +564,29 @@ impl App {
             self.refresh_suggestions();
         }
         if is_api_submit {
-            if let Some(key) = self.assistant.take_api_key_submission() {
-                if let Err(err) = self.credentials.set(ANTHROPIC_API_KEY, &key) {
-                    tracing::error!(%err, "could not persist API key");
-                } else {
-                    tracing::info!("API key saved to keyring");
-                    let agent = build_agent(Arc::clone(&self.credentials));
-                    self.assistant.set_agent(agent, !key_present(&*self.credentials));
+            match self.assistant.peek_api_key_submission() {
+                None => {
+                    tracing::warn!(
+                        "API key save was clicked but the input is empty — \
+                         did you paste / type the key first?"
+                    );
+                }
+                Some(key) => {
+                    let key_len = key.len();
+                    let prefix: String = key.chars().take(7).collect();
+                    if let Err(err) = self.credentials.set(ANTHROPIC_API_KEY, &key) {
+                        tracing::error!(%err, "could not persist API key");
+                    } else {
+                        tracing::info!(
+                            len = key_len,
+                            prefix = %prefix,
+                            "API key saved to keyring"
+                        );
+                        self.assistant.clear_api_key_draft();
+                        let agent = build_agent(Arc::clone(&self.credentials));
+                        self.assistant
+                            .set_agent(agent, !key_present(&*self.credentials));
+                    }
                 }
             }
         }

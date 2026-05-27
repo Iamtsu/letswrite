@@ -162,14 +162,23 @@ impl Assistant {
         self.needs_api_key = needs_api_key;
     }
 
-    /// Hook to receive the API-key value the user typed. The app shell
-    /// is responsible for actually persisting it to the keyring.
-    pub(crate) fn take_api_key_submission(&mut self) -> Option<String> {
-        if self.api_key_draft.trim().is_empty() {
-            return None;
+    /// Peek at the API-key the user typed without clearing it. The app
+    /// shell decides whether the value is acceptable before calling
+    /// [`Self::clear_api_key_draft`].
+    pub(crate) fn peek_api_key_submission(&self) -> Option<String> {
+        let trimmed = self.api_key_draft.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
         }
-        let key = std::mem::take(&mut self.api_key_draft);
-        Some(key.trim().to_owned())
+    }
+
+    /// Clear the input after a successful save. Leaving the draft in
+    /// place on failure lets the user fix and retry without re-typing
+    /// the whole key.
+    pub(crate) fn clear_api_key_draft(&mut self) {
+        self.api_key_draft.clear();
     }
 
     pub(crate) fn update(
