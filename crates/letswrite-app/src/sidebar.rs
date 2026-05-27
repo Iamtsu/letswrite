@@ -14,7 +14,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use iced::widget::{button, column, container, horizontal_rule, row, scrollable, text, text_input};
+use iced::widget::{
+    button, column, container, horizontal_rule, row, scrollable, text, text_input, tooltip,
+};
+use iced::widget::tooltip::Position as TooltipPosition;
 use iced::{Element, Length, Task};
 
 use letswrite_core::DocumentKind;
@@ -393,34 +396,13 @@ impl Sidebar {
             ]
             .spacing(4),
             row![
-                button(text("Editor").size(11))
-                    .on_press(Message::ShowEditor)
-                    .style(button::secondary)
-                    .width(Length::FillPortion(1)),
-                button(text("Chars").size(11))
-                    .on_press(Message::ShowCharacters)
-                    .style(button::secondary)
-                    .width(Length::FillPortion(1)),
-                button(text("Locs").size(11))
-                    .on_press(Message::ShowLocations)
-                    .style(button::secondary)
-                    .width(Length::FillPortion(1)),
-                button(text("Scenes").size(11))
-                    .on_press(Message::ShowCorkboard)
-                    .style(button::secondary)
-                    .width(Length::FillPortion(1)),
-                button(text("Timeline").size(11))
-                    .on_press(Message::ShowTimeline)
-                    .style(button::secondary)
-                    .width(Length::FillPortion(1)),
-                button(text("Graph").size(11))
-                    .on_press(Message::ShowRelationships)
-                    .style(button::secondary)
-                    .width(Length::FillPortion(1)),
-                button(text("Research").size(11))
-                    .on_press(Message::ShowResearch)
-                    .style(button::secondary)
-                    .width(Length::FillPortion(1)),
+                view_icon("\u{270E}", "Editor", Message::ShowEditor),
+                view_icon("\u{263B}", "Characters", Message::ShowCharacters),
+                view_icon("\u{26EF}", "Locations", Message::ShowLocations),
+                view_icon("\u{25A4}", "Scenes", Message::ShowCorkboard),
+                view_icon("\u{21C4}", "Timeline", Message::ShowTimeline),
+                view_icon("\u{232C}", "Graph", Message::ShowRelationships),
+                view_icon("\u{273A}", "Research", Message::ShowResearch),
             ]
             .spacing(4),
             horizontal_rule(1),
@@ -465,6 +447,24 @@ impl Sidebar {
 
         scrollable(col).height(Length::Fill).width(Length::Fill).into()
     }
+}
+
+/// View-switch icon button with a hover tooltip. Icons are plain Unicode
+/// glyphs — no icon font to ship and they render on every system font
+/// stack we'll realistically meet. Glyphs picked from the geometric and
+/// dingbats blocks so they look at home next to text.
+fn view_icon(
+    glyph: &'static str,
+    tooltip_text: &'static str,
+    message: Message,
+) -> Element<'static, Message> {
+    let btn = button(text(glyph).size(15).center())
+        .on_press(message)
+        .style(button::secondary)
+        .width(Length::FillPortion(1));
+    tooltip(btn, text(tooltip_text).size(11), TooltipPosition::Bottom)
+        .padding(4)
+        .into()
 }
 
 fn file_row(entry: &Entry) -> Element<'static, Message> {
