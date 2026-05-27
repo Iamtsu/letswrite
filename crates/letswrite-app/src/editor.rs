@@ -15,8 +15,17 @@ use std::time::{Duration, Instant};
 // Status, the `default` style fn, …) and a free-fn constructor. We import
 // the module here and call the constructor as `text_editor::TextEditor::new`
 // via the local alias `editor_widget` below.
+use iced::widget::scrollable::{AbsoluteOffset, Id as ScrollId};
 use iced::widget::text_editor::{self, Action, Content, TextEditor};
 use iced::widget::{button, column, container, markdown, row, scrollable, text};
+use std::sync::OnceLock;
+
+/// Stable scroll-container id so `jump_to_offset` can address the outer
+/// scrollable from anywhere in the editor module.
+fn editor_scroll_id() -> ScrollId {
+    static ID: OnceLock<ScrollId> = OnceLock::new();
+    ID.get_or_init(|| ScrollId::new("letswrite-editor-scroll")).clone()
+}
 use iced::{Border, Element, Font, Length, Task, Theme};
 
 use letswrite_core::{Document, DocumentKind};
@@ -153,48 +162,51 @@ impl Editor {
     }
 
     /// Jump the cursor to `offset` (byte position in the body) of the
-    /// currently-open document. If no document is open yet, the offset
-    /// is stashed and applied after the next `Message::Loaded(Ok)`.
-    /// Returns a `Task` because the caller chains it with `open_path`.
+    /// currently-open document AND scroll the surrounding scrollable so
+    /// the cursor's line is visible. If no document is open yet, the
+    /// offset is stashed and applied after the next `Message::Loaded(Ok)`.
     pub(crate) fn jump_to_offset(&mut self, offset: usize) -> Task<Message> {
         if self.open.is_some() {
-            // Apply immediately on the open buffer.
-            self.apply_jump(offset);
+            self.apply_jump(offset)
         } else {
             // No doc yet — stash for after the next Loaded(Ok).
             self.pending_jump_offset = Some(offset);
+            Task::none()
         }
-        Task::none()
     }
 
-    /// Move the cursor of the open buffer to `offset` by issuing
-    /// `Action::Move` actions. `text_editor` has no random-access cursor
-    /// move, so we go to document-start then walk forward; for big
-    /// documents this is still fast (it's just incrementing counters in
-    /// cosmic-text).
-    fn apply_jump(&mut self, offset: usize) {
+    /// Move the cursor of the open buffer to `offset` and scroll its
+    /// outer container so the cursor's line is visible. `text_editor`
+    /// has no random-access cursor move, so we go to document-start then
+    /// walk forward; for big documents this is still fast (it's just
+    /// incrementing counters in cosmic-text).
+    fn apply_jump(&mut self, offset: usize) -> Task<Message> {
         use iced::widget::text_editor::{Action, Motion};
         let Some(open) = self.open.as_mut() else {
-            return;
+            return Task::none();
         };
         let body = open.content.text();
-        // Translate the byte offset into (line, column).
         let (line, column) = offset_to_line_column(&body, offset);
-        // Jump to the start of the buffer, then down `line` lines, then
-        // right `column` characters. `Edit::Action::Move(Motion::...)`
-        // is what the text_editor exposes.
         open.content.perform(Action::Move(Motion::DocumentStart));
         for _ in 0..line {
             open.content.perform(Action::Move(Motion::Down));
         }
-        // Iced's Right motion is by grapheme; column here is byte-based.
-        // Approximate by walking columns one char at a time using the
-        // line's char count.
         let line_text = body.lines().nth(line).unwrap_or("");
         let char_col = byte_offset_to_char_index(line_text, column);
         for _ in 0..char_col {
             open.content.perform(Action::Move(Motion::Right));
         }
+
+        // Scroll the outer scrollable so the cursor's line is visible.
+        // We approximate line height as font_size × 1.4 — Iced doesn't
+        // expose the actual cosmic-text line metrics. Leave a few lines
+        // of top padding so the cursor lands a comfortable distance
+        // below the top edge.
+        let line_height = f32::from(self.font_size) * 1.4;
+        #[allow(clippy::cast_precision_loss, clippy::suboptimal_flops)]
+        let y = ((line as f32) * line_height - line_height * 3.0).max(0.0);
+        tracing::debug!(line, column, y, "scrolling editor to jump target");
+        scrollable::scroll_to(editor_scroll_id(), AbsoluteOffset { x: 0.0, y })
     }
 
     pub(crate) const fn set_syntax_theme(&mut self, theme: SyntaxTheme) {
@@ -306,7 +318,7 @@ impl Editor {
                 );
                 self.open = Some(open);
                 if let Some(offset) = self.pending_jump_offset.take() {
-                    self.apply_jump(offset);
+                    return self.apply_jump(offset);
                 }
                 Task::none()
             }
@@ -418,6 +430,7 @@ impl Editor {
             )
             .style(editor_borderless_style);
         scrollable(editor)
+            .id(editor_scroll_id())
             .height(Length::Fill)
             .width(Length::Fill)
             .into()
