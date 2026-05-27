@@ -22,6 +22,7 @@ use letswrite_core::{Project, Settings};
 use letswrite_import::import_project;
 
 use crate::assistant::{self, Assistant};
+use crate::context_builder::{self, BuildInputs};
 use crate::editor::{self, Editor};
 use crate::sidebar::{self, Sidebar};
 use crate::syntax::SyntaxTheme;
@@ -294,7 +295,7 @@ impl App {
 
     fn handle_assistant_message(&mut self, msg: assistant::Message) -> Task<Message> {
         let is_api_submit = matches!(msg, assistant::Message::ApiKeySubmit);
-        let context = AssistantContext::empty(); // proper context arrives in #14
+        let context = self.build_assistant_context();
         let task = self.assistant.update(msg, context).map(Message::Assistant);
         if is_api_submit {
             if let Some(key) = self.assistant.take_api_key_submission() {
@@ -308,6 +309,17 @@ impl App {
             }
         }
         task
+    }
+
+    fn build_assistant_context(&self) -> AssistantContext {
+        let inputs = BuildInputs {
+            project: self.project.as_ref(),
+            project_root: self.sidebar.project_root(),
+            editor: self.editor.snapshot(),
+            // Generous default; the agent will trim if it has to.
+            token_budget: 16_000,
+        };
+        context_builder::build(&inputs)
     }
 
     fn refresh_sidebar(&self) -> Task<Message> {

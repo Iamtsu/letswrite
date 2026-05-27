@@ -24,7 +24,10 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 unicode-segmentation.workspace = true
 serde_yaml.workspace = true
+serde_json.workspace = true
 rfd.workspace = true
+unic-langid.workspace = true
+rusqlite.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

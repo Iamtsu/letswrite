@@ -6,6 +6,7 @@
 
 mod app;
 mod assistant;
+mod context_builder;
 mod editor;
 mod sidebar;
 mod syntax;

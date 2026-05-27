@@ -2347,12 +2347,15 @@ dependencies = [
  "letswrite-core",
  "letswrite-import",
  "rfd",
+ "rusqlite",
+ "serde_json",
  "serde_yaml",
  "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "unic-langid",
  "unicode-segmentation",
 ]
 

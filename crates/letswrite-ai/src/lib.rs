@@ -34,7 +34,9 @@ pub mod providers;
 pub mod wire;
 
 pub use agent::{Agent, AgentEvent, AgentInput, DefaultAgent};
-pub use context::{AssistantContext, ContextWindow, EntityInScene};
+pub use context::{
+    AssistantContext, ContextWindow, DocumentContext, EntityInScene, ProjectMeta, WindowKind,
+};
 pub use credentials::{CredentialError, CredentialStore, KeyringCredentialStore};
 pub use error::{ProviderError, RetryHint};
 pub use provider::{
