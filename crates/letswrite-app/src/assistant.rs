@@ -16,6 +16,8 @@ use iced::{Element, Length, Task, Theme};
 use letswrite_ai::{Agent, AgentEvent, AgentInput, AssistantContext, ProviderError};
 use tokio_util::sync::CancellationToken;
 
+use crate::presets::BUILT_INS;
+
 /// One turn in the conversation: a user input + the assistant's reply
 /// (which grows as deltas arrive).
 #[derive(Debug, Clone)]
@@ -46,6 +48,8 @@ pub(crate) enum Message {
     InputChanged(String),
     Submit,
     Cancel,
+    /// User picked a preset; fill the composer + tag the next submit.
+    PresetSelected(&'static str),
     /// Streamed event from the agent. The `turn` index identifies which
     /// turn the event belongs to (turns are appended in order).
     Stream { turn: usize, event: AgentEventCow },
@@ -71,6 +75,8 @@ pub(crate) struct Assistant {
     turns: Vec<Turn>,
     /// Currently-typed input.
     draft: String,
+    /// Preset id staged for the next submit, if the user clicked one.
+    pending_preset: Option<&'static str>,
     /// Token to cancel the in-flight turn, if any.
     in_flight: Option<CancellationToken>,
     /// Inline API-key prompt when no key is configured.
@@ -85,6 +91,7 @@ impl Assistant {
             agent,
             turns: Vec::new(),
             draft: String::new(),
+            pending_preset: None,
             in_flight: None,
             api_key_draft: String::new(),
             needs_api_key,
@@ -113,10 +120,25 @@ impl Assistant {
     ) -> Task<Message> {
         match message {
             Message::InputChanged(s) => {
+                // If the user edits the composer manually, drop any preset
+                // tag — the input is no longer the preset's exact prompt.
+                // (A future task could keep the preset tag if the edit
+                // looks like a small addition; this is simpler and correct.)
+                if Some(s.as_str()) != BUILT_INS.iter().find(|p| Some(p.id) == self.pending_preset).map(|p| p.prompt) {
+                    self.pending_preset = None;
+                }
                 self.draft = s;
                 Task::none()
             }
             Message::Submit => self.start_turn(context_for_next_turn),
+            Message::PresetSelected(id) => {
+                if let Some(preset) = BUILT_INS.iter().find(|p| p.id == id) {
+                    // Populate the composer; user can still edit before sending.
+                    self.draft = preset.prompt.to_owned();
+                    self.pending_preset = Some(preset.id);
+                }
+                Task::none()
+            }
             Message::Cancel => {
                 if let Some(tok) = self.in_flight.take() {
                     tok.cancel();
@@ -161,6 +183,9 @@ impl Assistant {
                 .width(Length::Fill),
         );
 
+        // Preset toolbar.
+        col = col.push(preset_toolbar(self.pending_preset));
+
         // Composer.
         let composer = composer_row(&self.draft, self.in_flight.is_some(), self.agent.is_some());
         col = col.push(composer);
@@ -182,6 +207,7 @@ impl Assistant {
         if user_text.trim().is_empty() {
             return Task::none();
         }
+        let preset = self.pending_preset.take().map(str::to_owned);
         let cancel = CancellationToken::new();
         self.in_flight = Some(cancel.clone());
         let turn_index = self.turns.len();
@@ -192,10 +218,15 @@ impl Assistant {
             reply_items: Vec::new(),
         });
 
+        let input = AgentInput {
+            user_input: user_text,
+            preset,
+        };
+
         // Spawn a stream subscription: every AgentEvent becomes a
         // Message::Stream tagged with this turn's index.
         Task::run(
-            stream_from_agent(agent, AgentInput::user(user_text), context, cancel),
+            stream_from_agent(agent, input, context, cancel),
             move |event| Message::Stream {
                 turn: turn_index,
                 event: AgentEventCow(Arc::new(event)),
@@ -260,6 +291,23 @@ fn api_key_prompt(draft: &str) -> Element<'_, Message> {
     ]
     .spacing(4)
     .into()
+}
+
+fn preset_toolbar(active: Option<&'static str>) -> Element<'static, Message> {
+    let mut row = iced::widget::Row::new().spacing(4).padding([4, 0]);
+    for preset in BUILT_INS {
+        let style = if Some(preset.id) == active {
+            button::primary
+        } else {
+            button::secondary
+        };
+        row = row.push(
+            button(text(preset.label).size(11))
+                .style(style)
+                .on_press(Message::PresetSelected(preset.id)),
+        );
+    }
+    container(row.wrap()).into()
 }
 
 fn composer_row<'a>(
