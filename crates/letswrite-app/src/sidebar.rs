@@ -58,6 +58,9 @@ pub(crate) enum Message {
     PickProject,
     /// User asked to (re-)run the Markdown files importer on the open project.
     Reimport,
+    /// User wants to switch the main view (Editor / Characters / ...).
+    ShowEditor,
+    ShowCharacters,
     /// Result of the file-picker future. Handled by the app shell, which
     /// opens the project and then fires [`Self::ProjectLoaded`] with the
     /// real scan back into us.
@@ -104,6 +107,8 @@ pub(crate) struct SidebarReaction {
     pub fs_changed: bool,
     /// User asked to (re-)run the importer.
     pub reimport_requested: bool,
+    /// User wants to switch the main view.
+    pub show_view: Option<crate::views::MainView>,
     /// Async task to run (e.g. the file picker future). `Task` doesn't
     /// implement `Default`/`Debug`, hence the manual construction below.
     pub task: Task<Message>,
@@ -116,6 +121,7 @@ impl Default for SidebarReaction {
             open_project: None,
             fs_changed: false,
             reimport_requested: false,
+            show_view: None,
             task: Task::none(),
         }
     }
@@ -166,6 +172,14 @@ impl Sidebar {
             }
             Message::Reimport => SidebarReaction {
                 reimport_requested: true,
+                ..Default::default()
+            },
+            Message::ShowEditor => SidebarReaction {
+                show_view: Some(crate::views::MainView::Editor),
+                ..Default::default()
+            },
+            Message::ShowCharacters => SidebarReaction {
+                show_view: Some(crate::views::MainView::Characters),
                 ..Default::default()
             },
             Message::ProjectPicked(None) => SidebarReaction::default(),
@@ -349,6 +363,17 @@ impl Sidebar {
                     .width(Length::FillPortion(2)),
                 button(text("Re-index").size(12))
                     .on_press(Message::Reimport)
+                    .style(button::secondary)
+                    .width(Length::FillPortion(1)),
+            ]
+            .spacing(4),
+            row![
+                button(text("Editor").size(12))
+                    .on_press(Message::ShowEditor)
+                    .style(button::secondary)
+                    .width(Length::FillPortion(1)),
+                button(text("Characters").size(12))
+                    .on_press(Message::ShowCharacters)
                     .style(button::secondary)
                     .width(Length::FillPortion(1)),
             ]

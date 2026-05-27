@@ -11,6 +11,7 @@ mod editor;
 mod presets;
 mod sidebar;
 mod syntax;
+mod views;
 
 use iced::Size;
 use letswrite_core::Settings;

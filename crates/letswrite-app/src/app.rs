@@ -26,6 +26,9 @@ use crate::context_builder::{self, BuildInputs};
 use crate::editor::{self, Editor};
 use crate::sidebar::{self, Sidebar};
 use crate::syntax::SyntaxTheme;
+use crate::views::characters::{self as characters_view, CharactersView};
+use crate::views::MainView;
+
 
 const KEYRING_SERVICE: &str = "letswrite";
 const ANTHROPIC_API_KEY: &str = "anthropic-api-key";
@@ -46,6 +49,8 @@ pub(crate) struct App {
     assistant: Assistant,
     project: Option<Project>,
     credentials: Arc<dyn CredentialStore>,
+    main_view: MainView,
+    characters_view: CharactersView,
     /// Tracked here because Iced's `listen_with` filter is a plain `fn`
     /// pointer and can't see `App` state; we update this on
     /// `ModifiersChanged` events and read it on `WheelScrolled` to decide
@@ -59,6 +64,7 @@ pub(crate) enum Message {
     Editor(editor::Message),
     Sidebar(sidebar::Message),
     Assistant(assistant::Message),
+    CharactersView(characters_view::Message),
     /// Cycle through the available syntax themes (until a settings UI lands).
     #[allow(dead_code)] // wired by a settings UI later (#11 / TBD)
     CycleSyntaxTheme,
@@ -97,6 +103,8 @@ impl App {
             assistant,
             project: None,
             credentials,
+            main_view: MainView::Editor,
+            characters_view: CharactersView::new(),
             modifiers: Modifiers::default(),
         };
 
@@ -157,6 +165,7 @@ impl App {
             }
             Message::Sidebar(msg) => self.handle_sidebar_message(msg),
             Message::Assistant(msg) => self.handle_assistant_message(msg),
+            Message::CharactersView(msg) => self.handle_characters_view_message(msg),
             Message::CycleSyntaxTheme => {
                 let next = next_syntax_theme(self.settings.syntax_theme);
                 self.settings.syntax_theme = next;
@@ -204,11 +213,19 @@ impl App {
                     .height(Length::Fill)
                     .style(pane_surface_style)
                     .into(),
-                Pane::Editor => container(self.editor.view().map(Message::Editor))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .style(pane_surface_style)
-                    .into(),
+                Pane::Editor => {
+                    let body: Element<'_, Message> = match self.main_view {
+                        MainView::Editor => self.editor.view().map(Message::Editor),
+                        MainView::Characters => {
+                            self.characters_view.view().map(Message::CharactersView)
+                        }
+                    };
+                    container(body)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .style(pane_surface_style)
+                        .into()
+                }
                 Pane::Assistant => container(self.assistant.view().map(Message::Assistant))
                     .width(Length::Fill)
                     .height(Length::Fill)
@@ -232,6 +249,14 @@ impl App {
     fn handle_sidebar_message(&mut self, msg: sidebar::Message) -> Task<Message> {
         let reaction = self.sidebar.update(msg);
         let mut tasks: Vec<Task<Message>> = Vec::new();
+        if let Some(view) = reaction.show_view {
+            self.main_view = view;
+            if matches!(view, MainView::Characters) {
+                if let Some(p) = self.project.as_ref() {
+                    self.characters_view.refresh_cards(p);
+                }
+            }
+        }
         if let Some(root) = reaction.open_project {
             tasks.push(self.open_project(root));
         }
@@ -280,6 +305,9 @@ impl App {
                 self.run_import();
                 self.refresh_entities_in_scene();
                 self.refresh_suggestions();
+                if let Some(p) = self.project.as_ref() {
+                    self.characters_view.refresh_cards(p);
+                }
                 Task::done(Message::Sidebar(sidebar::Message::ProjectLoaded {
                     root,
                     name,
@@ -319,6 +347,29 @@ impl App {
             Err(err) => tracing::warn!(%err, "mention detection failed"),
         }
         self.refresh_suggestions();
+    }
+
+    fn handle_characters_view_message(
+        &mut self,
+        msg: characters_view::Message,
+    ) -> Task<Message> {
+        let project_root = self.sidebar.project_root().map(std::path::Path::to_path_buf);
+        let reaction = self.characters_view.update(
+            msg,
+            self.project.as_ref(),
+            project_root.as_deref(),
+        );
+        let task = reaction.task.map(Message::CharactersView);
+        if reaction.fs_changed {
+            // Re-index the project and refresh the card list so any new
+            // aliases / mentions land before the next view.
+            self.run_import();
+            if let Some(p) = self.project.as_ref() {
+                self.characters_view.refresh_cards(p);
+            }
+            self.refresh_entities_in_scene();
+        }
+        task
     }
 
     fn handle_assistant_message(&mut self, msg: assistant::Message) -> Task<Message> {

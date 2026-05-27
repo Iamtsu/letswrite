@@ -31,7 +31,7 @@ Master plan for building letswrite, a Rust/Iced book-writing app. Phased so each
 - [x] **#17 P2.6** Entity mention detection + confirmation flow — *blocked by #8*
 
 ## Phase 3 — Structural views
-- [ ] **#18 P3.1** Character overview & editor — *blocked by #8*
+- [x] **#18 P3.1** Character overview & editor — *blocked by #8*
 - [ ] **#19 P3.2** Location overview & editor — *blocked by #18*
 - [ ] **#20 P3.3** Scene cards / corkboard view — *blocked by #8*
 - [ ] **#21 P3.4** Plot/timeline view — *blocked by #20*
