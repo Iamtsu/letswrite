@@ -42,6 +42,9 @@ pub struct Settings {
 
     /// AI assistant defaults.
     pub ai: AiSettings,
+
+    /// Editor syntax highlighting theme.
+    pub syntax_theme: SyntaxTheme,
 }
 
 impl Default for Settings {
@@ -52,6 +55,7 @@ impl Default for Settings {
             window: WindowSettings::default(),
             theme: ThemePreference::default(),
             ai: AiSettings::default(),
+            syntax_theme: SyntaxTheme::default(),
         }
     }
 }
@@ -95,6 +99,19 @@ pub struct AiSettings {
     pub provider: Option<String>,
     /// Provider-specific model identifier.
     pub model: Option<String>,
+}
+
+/// Editor syntax highlighting theme. Stored as a string so settings stays
+/// human-editable; the UI crate owns the actual color palettes.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SyntaxTheme {
+    /// Okabe-Ito palette — designed for color-blind viewers. Default because
+    /// it works for the widest audience.
+    #[default]
+    ColorblindSafe,
+    Solarized,
+    HighContrast,
 }
 
 impl Settings {

@@ -19,6 +19,8 @@ use letswrite_core::{Document, DocumentKind};
 use serde_yaml::Value as YamlValue;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::syntax::{self, MarkdownHighlighter, SyntaxTheme};
+
 /// Time between the last keystroke and an autosave write.
 const AUTOSAVE_IDLE: Duration = Duration::from_millis(500);
 
@@ -68,6 +70,7 @@ pub(crate) struct EditorSnapshot {
 pub(crate) struct Editor {
     open: Option<OpenDocument>,
     placeholder: String,
+    syntax_theme: SyntaxTheme,
 }
 
 #[derive(Debug, Clone)]
@@ -90,8 +93,12 @@ pub(crate) struct LoadedFile {
 }
 
 impl Editor {
-    pub(crate) fn new(placeholder: impl Into<String>) -> Self {
-        Self { open: None, placeholder: placeholder.into() }
+    pub(crate) fn new(placeholder: impl Into<String>, syntax_theme: SyntaxTheme) -> Self {
+        Self { open: None, placeholder: placeholder.into(), syntax_theme }
+    }
+
+    pub(crate) const fn set_syntax_theme(&mut self, theme: SyntaxTheme) {
+        self.syntax_theme = theme;
     }
 
     /// Schedule a file load. The result comes back as `Message::Loaded`.
@@ -238,7 +245,11 @@ impl Editor {
             .padding(16)
             .font(Font::MONOSPACE)
             .size(15)
-            .on_action(Message::Action);
+            .on_action(Message::Action)
+            .highlight_with::<MarkdownHighlighter>(
+                syntax::Settings { theme: self.syntax_theme },
+                format_highlight,
+            );
 
         let snapshot = self.snapshot();
         let status = status_bar(snapshot);
@@ -272,6 +283,18 @@ fn count_words(text: &str) -> usize {
     text.unicode_words().count()
 }
 
+/// Plain fn pointer passed to `text_editor.highlight_with`. Iced requires
+/// `fn(...)` here, not `Fn(...)`, so we receive the theme via the per-span
+/// highlight payload (see [`syntax::Highlight`]).
+#[allow(clippy::trivially_copy_pass_by_ref)] // signature dictated by Iced's fn pointer
+fn format_highlight(
+    highlight: &syntax::Highlight,
+    _theme: &iced::Theme,
+) -> iced::advanced::text::highlighter::Format<Font> {
+    let (kind, theme) = *highlight;
+    theme.format_for(kind)
+}
+
 fn derive_title(frontmatter: &YamlValue, rel_path: &str) -> String {
     if let YamlValue::Mapping(m) = frontmatter {
         if let Some(YamlValue::String(s)) = m.get(YamlValue::String("title".to_owned())) {
@@ -299,7 +322,7 @@ mod tests {
 
     #[test]
     fn snapshot_is_default_when_no_file_open() {
-        let editor = Editor::new("placeholder");
+        let editor = Editor::new("placeholder", SyntaxTheme::default());
         let snap = editor.snapshot();
         assert!(snap.rel_path.is_none());
         assert!(!snap.is_dirty);

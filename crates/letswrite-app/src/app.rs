@@ -13,6 +13,7 @@ use letswrite_core::settings::ThemePreference;
 use letswrite_core::{I18n, Settings};
 
 use crate::editor::{self, Editor};
+use crate::syntax::SyntaxTheme;
 
 #[derive(Debug, Clone, Copy)]
 enum Pane {
@@ -37,6 +38,8 @@ pub(crate) enum Message {
     /// Temporary: open the dogfood chapter from The-Threshold if it exists.
     /// Replaced by a real file picker in #7.
     OpenDogfoodChapter,
+    /// Cycle through the available syntax themes (until a settings UI lands).
+    CycleSyntaxTheme,
 }
 
 impl App {
@@ -54,7 +57,8 @@ impl App {
 
         let panes = build_panes(&settings);
         let editor_placeholder = i18n.tr("editor-placeholder");
-        let editor = Editor::new(editor_placeholder);
+        let syntax_theme = SyntaxTheme::from_settings(settings.syntax_theme);
+        let editor = Editor::new(editor_placeholder, syntax_theme);
 
         (
             Self { settings, i18n, panes, editor, project_root: None },
@@ -97,6 +101,16 @@ impl App {
                 }
                 self.project_root = Some(project_root.clone());
                 Editor::open_path(project_root, abs_path).map(Message::Editor)
+            }
+            Message::CycleSyntaxTheme => {
+                let next = next_syntax_theme(self.settings.syntax_theme);
+                self.settings.syntax_theme = next;
+                self.editor.set_syntax_theme(SyntaxTheme::from_settings(next));
+                tracing::info!(theme = ?next, "syntax theme changed");
+                if let Err(err) = self.settings.save() {
+                    tracing::warn!(%err, "could not persist syntax theme");
+                }
+                Task::none()
             }
         }
     }
@@ -188,6 +202,9 @@ fn sidebar_view(heading: String, empty_label: String) -> Element<'static, Messag
             // Temporary dogfood entry — replaced by real navigation in #7.
             button(text("Open The Threshold / Chapter 2").size(12))
                 .on_press(Message::OpenDogfoodChapter),
+            horizontal_rule(1),
+            button(text("Cycle syntax theme").size(12))
+                .on_press(Message::CycleSyntaxTheme),
         ]
         .spacing(8)
         .padding(12),
@@ -196,6 +213,17 @@ fn sidebar_view(heading: String, empty_label: String) -> Element<'static, Messag
     .height(Length::Fill)
     .style(pane_surface_style)
     .into()
+}
+
+const fn next_syntax_theme(
+    current: letswrite_core::settings::SyntaxTheme,
+) -> letswrite_core::settings::SyntaxTheme {
+    use letswrite_core::settings::SyntaxTheme as T;
+    match current {
+        T::ColorblindSafe => T::Solarized,
+        T::Solarized => T::HighContrast,
+        T::HighContrast => T::ColorblindSafe,
+    }
 }
 
 fn placeholder_pane(label: String) -> Element<'static, Message> {
