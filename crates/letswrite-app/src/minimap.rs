@@ -13,8 +13,6 @@
 //! [`crate::views::relationships`] graph: the minimap is a glanceable
 //! header strip, not a full view.
 
-use std::f32::consts::TAU;
-
 use iced::mouse;
 use iced::widget::canvas::{self, Cache, Frame, Geometry, Path};
 use iced::widget::Canvas;
@@ -49,6 +47,11 @@ impl std::fmt::Debug for Minimap {
 impl Minimap {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    /// Number of stars currently shown.
+    pub(crate) fn len(&self) -> usize {
+        self.stars.len()
     }
 
     /// Refresh the constellation. The full character list comes from the
@@ -121,31 +124,21 @@ fn draw_minimap(frame: &mut Frame, stars: &[Star]) {
     }
 }
 
-/// Position N stars in a compact arc near the top of the canvas. We use a
-/// shallow arc (top half of a wide ellipse) so even tens of characters
-/// fit horizontally without crowding the vertical space.
+/// Position N stars in an evenly-spaced horizontal row across the
+/// available width. Simple and readable beats clever curves for ~10
+/// characters; if a project ever exceeds the available width we'll wrap.
 fn star_positions(n: usize, bounds: Size) -> Vec<Point> {
     if n == 0 {
         return Vec::new();
     }
-    let pad = 12.0;
-    let cx = bounds.width / 2.0;
-    let cy = bounds.height * 0.6;
-    let rx = (bounds.width / 2.0) - pad;
-    let ry = (bounds.height / 2.0) - pad;
+    let pad = 16.0;
+    let y = bounds.height / 2.0;
     if n == 1 {
-        return vec![Point::new(cx, cy)];
+        return vec![Point::new(bounds.width / 2.0, y)];
     }
-    (0..n)
-        .map(|i| {
-            // Spread across the lower half of a TAU/3 arc so the arc looks
-            // like a slight bowl, not a full ellipse.
-            let span = TAU * 0.4;
-            let t = i as f32 / (n - 1) as f32;
-            let angle = -span / 2.0 + t * span - TAU / 4.0;
-            Point::new(cx + rx * angle.sin(), cy + ry * angle.cos() * 0.5)
-        })
-        .collect()
+    let usable = (bounds.width - 2.0 * pad).max(0.0);
+    let step = usable / (n - 1) as f32;
+    (0..n).map(|i| Point::new(pad + step * i as f32, y)).collect()
 }
 
 #[cfg(test)]

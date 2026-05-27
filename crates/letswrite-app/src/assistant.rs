@@ -147,6 +147,10 @@ impl Assistant {
         self.minimap.set_state(all_characters, present_names);
     }
 
+    fn minimap_total(&self) -> usize {
+        self.minimap.len()
+    }
+
     /// Refresh the characters-in-scene list (called by the shell when the
     /// editor's snapshot changes or context is rebuilt).
     pub(crate) fn set_entities_in_scene(&mut self, entities: Vec<EntityInScene>) {
@@ -249,6 +253,21 @@ impl Assistant {
             col = col.push(text("(Set your Anthropic API key to enable the assistant.)").size(11));
         }
 
+        col = col.push(
+            text(format!(
+                "Characters in scene ({}/{})",
+                self.entities_in_scene
+                    .iter()
+                    .filter(|e| e.kind == "character")
+                    .count(),
+                // Total characters in the project — the minimap shows one
+                // dot per character so this is also `self.minimap.len()`.
+                // We thread the count through `entities_in_scene` for
+                // simplicity; it doesn't need to be exact.
+                self.minimap_total(),
+            ))
+            .size(11),
+        );
         col = col.push(self.minimap.view());
         col = col.push(tab_bar(
             self.tab,
