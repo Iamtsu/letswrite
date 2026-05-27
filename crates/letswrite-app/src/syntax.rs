@@ -49,6 +49,11 @@ pub(crate) enum TokenKind {
     /// We distinguish from heading by requiring it to not be at column 0
     /// followed by space.
     Hashtag,
+    /// Direct-speech / dialogue inside a recognised quote pair. Includes the
+    /// opening and closing punctuation. Supports straight ASCII (`"…"`),
+    /// curly typographic (`"…"`), German (`„…"`), and French guillemets
+    /// (`«…»`). These don't nest in practice and we don't try to.
+    Dialogue,
 }
 
 /// User-selectable syntax theme. Color schemes share the same role mapping;
@@ -106,6 +111,7 @@ impl SyntaxTheme {
             TokenKind::ListMarker => (palette.marker, true, false),
             TokenKind::LinkText | TokenKind::WikiLink => (palette.link, false, false),
             TokenKind::Hashtag => (palette.tag, false, false),
+            TokenKind::Dialogue => (palette.dialogue, false, false),
         };
         Format {
             color: Some(color),
@@ -133,6 +139,7 @@ impl SyntaxTheme {
                 marker: rgb(0x56, 0xB4, 0xE9),
                 link: rgb(0x00, 0x72, 0xB2),
                 tag: rgb(0xCC, 0x79, 0xA7),
+                dialogue: rgb(0xD5, 0x5E, 0x00), // Okabe-Ito vermillion
             },
             Self::Solarized => Palette {
                 heading_levels: [
@@ -149,6 +156,7 @@ impl SyntaxTheme {
                 marker: rgb(0xB5, 0x89, 0x00),
                 link: rgb(0x26, 0x8B, 0xD2),
                 tag: rgb(0xD3, 0x36, 0x82),
+                dialogue: rgb(0xB5, 0x89, 0x00), // Solarized yellow
             },
             Self::HighContrast => Palette {
                 heading_levels: [
@@ -165,6 +173,7 @@ impl SyntaxTheme {
                 marker: rgb(0x00, 0xE5, 0xFF),
                 link: rgb(0xFF, 0xC1, 0x07),
                 tag: rgb(0xFF, 0x6E, 0x40),
+                dialogue: rgb(0xFF, 0x4D, 0xC4), // hot pink — scans instantly
             },
         }
     }
@@ -181,6 +190,10 @@ struct Palette {
     marker: Color,
     link: Color,
     tag: Color,
+    /// Color for direct-speech / dialogue spans (`"…"`, `«…»`, etc.).
+    /// Picked to be high-saturation in each theme — dialogue is the spine
+    /// of fiction prose and writers scan for it constantly.
+    dialogue: Color,
 }
 
 impl Palette {
@@ -478,6 +491,21 @@ fn scan_inline(
     let n = bytes.len();
     let mut i = 0;
     while i < n {
+        // Dialogue: detected by recognised opening quote chars. The byte-level
+        // loop only needs the first byte of multi-byte UTF-8 sequences to
+        // dispatch, then char-aware helpers handle the rest.
+        if let Some((open_len, close_pat)) = dialogue_open_at(s, i) {
+            // Search for the closing pattern. If absent (mid-edit), still
+            // colorize from the open to end-of-line so the writer sees
+            // dialogue-in-progress.
+            let search_from = i + open_len;
+            let end = find_substr(s, search_from, close_pat)
+                .map_or(n, |p| p + close_pat.len());
+            out.push((offset + i..offset + end, TokenKind::Dialogue));
+            i = end;
+            continue;
+        }
+
         // Wiki link: `[[...]]`
         if i + 1 < n && bytes[i] == b'[' && bytes[i + 1] == b'[' {
             if let Some(end) = find_double_close(s, i + 2) {
@@ -589,6 +617,61 @@ fn parse_link(s: &str, start: usize) -> Option<(usize, usize)> {
     }
     let url_end = s[text_end + 2..].find(')')? + text_end + 2;
     Some((text_end, url_end))
+}
+
+/// If a recognised dialogue opening starts at byte index `i` in `s`, return
+/// `(open_byte_len, close_substring)`. We support:
+/// - ASCII straight `"` (open = close = `"`)
+/// - Typographic curly `"…"`  (U+201C open, U+201D close)
+/// - German `„…"`              (U+201E open, U+201D close — same close as curly)
+/// - French «…» guillemets    (U+00AB open, U+00BB close)
+///
+/// The ASCII case requires the `"` to look like an opening quote — i.e. not
+/// immediately preceded by a word character — so possessives and contractions
+/// inside words don't trigger.
+fn dialogue_open_at(s: &str, i: usize) -> Option<(usize, &'static str)> {
+    let bytes = s.as_bytes();
+    if i >= bytes.len() {
+        return None;
+    }
+
+    // Cheap byte-level prefilter on the leading byte, then full-char check.
+    match bytes[i] {
+        b'"' => {
+            // Only treat as an opening quote if the previous char isn't a
+            // word char. Avoids "don't"-style false positives mid-word.
+            if i > 0 && is_word_char(bytes, i - 1) {
+                return None;
+            }
+            Some((1, "\""))
+        }
+        0xE2 => {
+            // Could be U+201C ("), U+201D ("), or U+201E („) — each is 3 bytes
+            // starting with 0xE2 0x80.
+            if bytes.get(i + 1) != Some(&0x80) {
+                return None;
+            }
+            match bytes.get(i + 2) {
+                Some(&0x9C) => Some((3, "\u{201D}")), // "  →  "
+                Some(&0x9E) => Some((3, "\u{201C}")), // „  →  " (German fiction sometimes closes with U+201C)
+                _ => None,
+            }
+        }
+        0xC2 => {
+            // U+00AB « is 0xC2 0xAB.
+            if bytes.get(i + 1) == Some(&0xAB) {
+                Some((2, "\u{00BB}"))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Find `needle` in `&s[from..]`, returning its absolute byte index.
+fn find_substr(s: &str, from: usize, needle: &str) -> Option<usize> {
+    s[from..].find(needle).map(|p| from + p)
 }
 
 fn find_two(s: &str, from: usize, a: u8, b: u8) -> Option<usize> {
@@ -764,6 +847,88 @@ mod tests {
     }
 
     #[test]
+    fn dialogue_ascii_straight_quotes() {
+        let line = "She said, \"I won't.\"";
+        let toks = scan(line);
+        let dialogue: Vec<_> = toks
+            .iter()
+            .filter(|(_, k)| matches!(k, TokenKind::Dialogue))
+            .collect();
+        assert_eq!(dialogue.len(), 1, "got: {toks:?}");
+        assert_eq!(&line[dialogue[0].0.clone()], "\"I won't.\"");
+    }
+
+    #[test]
+    fn dialogue_does_not_trigger_inside_word() {
+        // "don't" contains a `'`, not `"`, but make sure we'd never match a
+        // `"` that's preceded by a word character either.
+        let line = "the field x\"y is not dialogue.";
+        let toks = scan(line);
+        assert!(toks.iter().all(|(_, k)| !matches!(k, TokenKind::Dialogue)));
+    }
+
+    #[test]
+    fn dialogue_curly_typographic_quotes() {
+        let line = "He whispered, \u{201C}stay close.\u{201D}";
+        let toks = scan(line);
+        let dialogue: Vec<_> = toks
+            .iter()
+            .filter(|(_, k)| matches!(k, TokenKind::Dialogue))
+            .collect();
+        assert_eq!(dialogue.len(), 1);
+        assert_eq!(&line[dialogue[0].0.clone()], "\u{201C}stay close.\u{201D}");
+    }
+
+    #[test]
+    fn dialogue_german_quotes() {
+        let line = "Sie sagte: \u{201E}Komm her.\u{201C} Dann ging sie.";
+        let toks = scan(line);
+        let dialogue: Vec<_> = toks
+            .iter()
+            .filter(|(_, k)| matches!(k, TokenKind::Dialogue))
+            .collect();
+        assert_eq!(dialogue.len(), 1);
+        assert_eq!(&line[dialogue[0].0.clone()], "\u{201E}Komm her.\u{201C}");
+    }
+
+    #[test]
+    fn dialogue_french_guillemets() {
+        let line = "Elle a dit: \u{00AB}viens ici.\u{00BB} et il est venu.";
+        let toks = scan(line);
+        let dialogue: Vec<_> = toks
+            .iter()
+            .filter(|(_, k)| matches!(k, TokenKind::Dialogue))
+            .collect();
+        assert_eq!(dialogue.len(), 1);
+        assert_eq!(&line[dialogue[0].0.clone()], "\u{00AB}viens ici.\u{00BB}");
+    }
+
+    #[test]
+    fn dialogue_unclosed_still_highlights_to_eol() {
+        // Writer just started typing dialogue; no closing quote yet.
+        let line = "He turned and said, \"this isn't over";
+        let toks = scan(line);
+        let dialogue: Vec<_> = toks
+            .iter()
+            .filter(|(_, k)| matches!(k, TokenKind::Dialogue))
+            .collect();
+        assert_eq!(dialogue.len(), 1, "got: {toks:?}");
+        assert!(line[dialogue[0].0.clone()].starts_with('"'));
+        assert!(line[dialogue[0].0.clone()].ends_with("over"));
+    }
+
+    #[test]
+    fn dialogue_two_pieces_on_one_line() {
+        let line = "\"Yes,\" she said, \"and no.\"";
+        let toks = scan(line);
+        let count = toks
+            .iter()
+            .filter(|(_, k)| matches!(k, TokenKind::Dialogue))
+            .count();
+        assert_eq!(count, 2, "got: {toks:?}");
+    }
+
+    #[test]
     fn all_themes_produce_a_format_for_each_kind() {
         // Smoke test: every theme handles every kind without panicking.
         let kinds = [
@@ -782,6 +947,7 @@ mod tests {
             TokenKind::LinkUrl,
             TokenKind::WikiLink,
             TokenKind::Hashtag,
+            TokenKind::Dialogue,
         ];
         for theme in SyntaxTheme::ALL {
             for kind in kinds {
