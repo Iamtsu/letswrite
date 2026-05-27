@@ -11,11 +11,13 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use iced::widget::text_editor::{Action, Content};
-use iced::widget::{
-    button, column, container, markdown, row, scrollable, text, text_editor,
-};
-use iced::{Element, Font, Length, Task, Theme};
+// Note: `iced::widget::text_editor` is both a module (containing Style,
+// Status, the `default` style fn, …) and a free-fn constructor. We import
+// the module here and call the constructor as `text_editor::TextEditor::new`
+// via the local alias `editor_widget` below.
+use iced::widget::text_editor::{self, Action, Content, TextEditor};
+use iced::widget::{button, column, container, markdown, row, scrollable, text};
+use iced::{Border, Element, Font, Length, Task, Theme};
 
 use letswrite_core::{Document, DocumentKind};
 use serde_yaml::Value as YamlValue;
@@ -342,7 +344,7 @@ impl Editor {
     }
 
     fn editor_view<'a>(&self, open: &'a OpenDocument) -> Element<'a, Message> {
-        text_editor(&open.content)
+        TextEditor::new(&open.content)
             .placeholder("Start writing…")
             .height(Length::Fill)
             .padding(16)
@@ -353,6 +355,7 @@ impl Editor {
                 syntax::Settings { theme: self.syntax_theme },
                 format_highlight,
             )
+            .style(editor_borderless_style)
             .into()
     }
 
@@ -426,6 +429,19 @@ fn format_highlight(
 ) -> iced::advanced::text::highlighter::Format<Font> {
     let (kind, theme) = *highlight;
     theme.format_for(kind)
+}
+
+/// Borderless variant of the default `text_editor` style. Removes the
+/// rectangular outline so the editor blends with the pane background and
+/// matches the look of the rendered preview (which has no border either).
+/// All other style properties — background, value/selection color, focus
+/// tint — come from the default.
+fn editor_borderless_style(theme: &Theme, status: text_editor::Status) -> text_editor::Style {
+    let base = text_editor::default(theme, status);
+    text_editor::Style {
+        border: Border { width: 0.0, ..base.border },
+        ..base
+    }
 }
 
 /// Parse Markdown into the preview's cached `Vec<Item>`, returning the items
