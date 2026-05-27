@@ -9,6 +9,7 @@ pub(crate) mod characters;
 pub(crate) mod corkboard;
 pub(crate) mod locations;
 pub(crate) mod relationships;
+pub(crate) mod research;
 pub(crate) mod timeline;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -26,6 +27,8 @@ pub(crate) enum MainView {
     Timeline,
     /// Relationships graph.
     Relationships,
+    /// Research / worldbuilding notes.
+    Research,
 }
 
 // MainView::label() will be useful once we render a tab strip with the

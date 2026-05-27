@@ -65,6 +65,7 @@ pub(crate) enum Message {
     ShowCorkboard,
     ShowTimeline,
     ShowRelationships,
+    ShowResearch,
     /// Result of the file-picker future. Handled by the app shell, which
     /// opens the project and then fires [`Self::ProjectLoaded`] with the
     /// real scan back into us.
@@ -200,6 +201,10 @@ impl Sidebar {
             },
             Message::ShowRelationships => SidebarReaction {
                 show_view: Some(crate::views::MainView::Relationships),
+                ..Default::default()
+            },
+            Message::ShowResearch => SidebarReaction {
+                show_view: Some(crate::views::MainView::Research),
                 ..Default::default()
             },
             Message::ProjectPicked(None) => SidebarReaction::default(),
@@ -410,6 +415,10 @@ impl Sidebar {
                     .width(Length::FillPortion(1)),
                 button(text("Graph").size(11))
                     .on_press(Message::ShowRelationships)
+                    .style(button::secondary)
+                    .width(Length::FillPortion(1)),
+                button(text("Research").size(11))
+                    .on_press(Message::ShowResearch)
                     .style(button::secondary)
                     .width(Length::FillPortion(1)),
             ]

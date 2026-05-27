@@ -16,6 +16,7 @@ use letswrite_core::{Document, DocumentKind, Result};
 pub(crate) struct Outcome {
     pub characters: usize,
     pub locations: usize,
+    pub research: usize,
 }
 
 #[allow(clippy::redundant_pub_crate)]
@@ -26,11 +27,16 @@ pub(crate) fn import(
 ) -> Result<Outcome> {
     let mut characters = 0;
     let mut locations = 0;
+    let mut research = 0;
 
     for (kind, _, doc) in docs {
         let entity_kind = match kind {
             DocumentKind::Character => "character",
             DocumentKind::Location => "location",
+            // Research files map to a flexible entity kind, defaulting to
+            // `concept`. Frontmatter `type:` overrides — useful values are
+            // `concept`, `faction`, `item` (others fall back to `concept`).
+            DocumentKind::Research => research_kind(&doc.frontmatter),
             _ => continue,
         };
 
@@ -62,11 +68,29 @@ pub(crate) fn import(
         match kind {
             DocumentKind::Character => characters += 1,
             DocumentKind::Location => locations += 1,
+            DocumentKind::Research => research += 1,
             _ => unreachable!(),
         }
     }
 
-    Ok(Outcome { characters, locations })
+    Ok(Outcome { characters, locations, research })
+}
+
+/// Inspect a research document's frontmatter `type:` field and map it to
+/// one of the abstraction's `concept` / `faction` / `item` kinds. Unknown
+/// or missing → `concept`.
+fn research_kind(frontmatter: &YamlValue) -> &'static str {
+    let YamlValue::Mapping(m) = frontmatter else {
+        return "concept";
+    };
+    let Some(YamlValue::String(t)) = m.get(YamlValue::String("type".into())) else {
+        return "concept";
+    };
+    match t.trim().to_ascii_lowercase().as_str() {
+        "faction" => "faction",
+        "item" => "item",
+        _ => "concept",
+    }
 }
 
 /// Resolve the entity's display name: prefer frontmatter `title`, then the

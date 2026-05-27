@@ -30,6 +30,7 @@ use crate::views::characters::{self as characters_view, CharactersView};
 use crate::views::corkboard::{self as corkboard_view, CorkboardView};
 use crate::views::locations::{self as locations_view, LocationsView};
 use crate::views::relationships::{self as relationships_view, RelationshipsView};
+use crate::views::research::{self as research_view, ResearchView};
 use crate::views::timeline::{self as timeline_view, TimelineView};
 use crate::views::MainView;
 
@@ -59,6 +60,7 @@ pub(crate) struct App {
     corkboard_view: CorkboardView,
     timeline_view: TimelineView,
     relationships_view: RelationshipsView,
+    research_view: ResearchView,
     /// Tracked here because Iced's `listen_with` filter is a plain `fn`
     /// pointer and can't see `App` state; we update this on
     /// `ModifiersChanged` events and read it on `WheelScrolled` to decide
@@ -77,6 +79,7 @@ pub(crate) enum Message {
     CorkboardView(corkboard_view::Message),
     TimelineView(timeline_view::Message),
     RelationshipsView(relationships_view::Message),
+    ResearchView(research_view::Message),
     /// Cycle through the available syntax themes (until a settings UI lands).
     #[allow(dead_code)] // wired by a settings UI later (#11 / TBD)
     CycleSyntaxTheme,
@@ -121,6 +124,7 @@ impl App {
             corkboard_view: CorkboardView::new(),
             timeline_view: TimelineView::new(),
             relationships_view: RelationshipsView::new(),
+            research_view: ResearchView::new(),
             modifiers: Modifiers::default(),
         };
 
@@ -186,6 +190,7 @@ impl App {
             Message::CorkboardView(msg) => self.handle_corkboard_view_message(msg),
             Message::TimelineView(msg) => self.handle_timeline_view_message(msg),
             Message::RelationshipsView(msg) => self.handle_relationships_view_message(msg),
+            Message::ResearchView(msg) => self.handle_research_view_message(msg),
             Message::CycleSyntaxTheme => {
                 let next = next_syntax_theme(self.settings.syntax_theme);
                 self.settings.syntax_theme = next;
@@ -252,6 +257,9 @@ impl App {
                             .relationships_view
                             .view()
                             .map(Message::RelationshipsView),
+                        MainView::Research => {
+                            self.research_view.view().map(Message::ResearchView)
+                        }
                     };
                     container(body)
                         .width(Length::Fill)
@@ -295,6 +303,7 @@ impl App {
                     }
                     MainView::Timeline => self.timeline_view.refresh(p),
                     MainView::Relationships => self.relationships_view.refresh(p),
+                    MainView::Research => self.research_view.refresh_cards(p),
                     MainView::Editor => {}
                 }
             }
@@ -355,6 +364,7 @@ impl App {
                     }
                     self.timeline_view.refresh(p);
                     self.relationships_view.refresh(p);
+                    self.research_view.refresh_cards(p);
                 }
                 Task::done(Message::Sidebar(sidebar::Message::ProjectLoaded {
                     root,
@@ -435,6 +445,27 @@ impl App {
             }
         }
         Task::batch(tasks)
+    }
+
+    fn handle_research_view_message(
+        &mut self,
+        msg: research_view::Message,
+    ) -> Task<Message> {
+        let project_root = self.sidebar.project_root().map(std::path::Path::to_path_buf);
+        let reaction = self.research_view.update(
+            msg,
+            self.project.as_ref(),
+            project_root.as_deref(),
+        );
+        let task = reaction.task.map(Message::ResearchView);
+        if reaction.fs_changed {
+            self.run_import();
+            if let Some(p) = self.project.as_ref() {
+                self.research_view.refresh_cards(p);
+            }
+            self.refresh_entities_in_scene();
+        }
+        task
     }
 
     fn handle_relationships_view_message(

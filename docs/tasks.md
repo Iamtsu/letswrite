@@ -37,7 +37,7 @@ Master plan for building letswrite, a Rust/Iced book-writing app. Phased so each
 - [x] **#21 P3.4** Plot/timeline view — *blocked by #20*
 - [x] **#22 P3.5** Relationships graph — *blocked by #18, #19*
 - [x] **#23 P3.6** Minimap of all characters (graphical) — *blocked by #16, #17*
-- [ ] **#24 P3.7** Research / worldbuilding notes — *blocked by #7*
+- [x] **#24 P3.7** Research / worldbuilding notes — *blocked by #7*
 
 ## Phase 4 — Export, packaging, polish
 - [ ] **#25 P4.1** Export: Markdown bundle — *blocked by #6*

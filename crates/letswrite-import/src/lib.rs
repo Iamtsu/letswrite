@@ -28,6 +28,7 @@ use letswrite_core::{Document, DocumentKind, Error, Project, Result};
 pub struct ImportReport {
     pub characters: usize,
     pub locations: usize,
+    pub research: usize,
     pub scenes: usize,
     pub mentions: usize,
     /// Wiki-link targets that didn't match any known entity. Just a count;
@@ -92,6 +93,7 @@ pub fn import_project(project: &mut Project) -> Result<ImportReport> {
     let report = ImportReport {
         characters: entities_outcome.characters,
         locations: entities_outcome.locations,
+        research: entities_outcome.research,
         scenes: scenes_outcome.scenes,
         mentions: mentions_outcome.mentions,
         unresolved_mentions: mentions_outcome.unresolved,
