@@ -69,6 +69,7 @@ pulldown-cmark = { version = "0.12", default-features = false }
 
 # Filesystem
 notify = "7"
+notify-debouncer-full = "0.4"
 directories = "5"
 
 # Credentials
