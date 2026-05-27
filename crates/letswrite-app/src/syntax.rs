@@ -217,7 +217,7 @@ const fn weighted_font(bold: bool, italic: bool) -> Font {
     Font {
         weight: if bold { Weight::Bold } else { Weight::Normal },
         style: if italic { Style::Italic } else { Style::Normal },
-        ..Font::MONOSPACE
+        ..Font::DEFAULT
     }
 }
 

@@ -257,7 +257,7 @@ impl Editor {
             .placeholder("Start writing…")
             .height(Length::Fill)
             .padding(16)
-            .font(Font::MONOSPACE)
+            .font(Font::DEFAULT)
             .size(self.font_size)
             .on_action(Message::Action)
             .highlight_with::<MarkdownHighlighter>(
