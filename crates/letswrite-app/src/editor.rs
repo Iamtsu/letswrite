@@ -344,9 +344,14 @@ impl Editor {
     }
 
     fn editor_view<'a>(&self, open: &'a OpenDocument) -> Element<'a, Message> {
-        TextEditor::new(&open.content)
+        // Length::Shrink lets the editor grow to content height; we then
+        // let `scrollable` provide the visible scrollbar. With Length::Fill
+        // here, `text_editor` clamps to the parent and scrolls internally
+        // without surfacing a bar — matching the Preview look needs the
+        // outer scrollable.
+        let editor = TextEditor::new(&open.content)
             .placeholder("Start writing…")
-            .height(Length::Fill)
+            .height(Length::Shrink)
             .padding(16)
             .font(Font::DEFAULT)
             .size(self.font_size)
@@ -355,7 +360,10 @@ impl Editor {
                 syntax::Settings { theme: self.syntax_theme },
                 format_highlight,
             )
-            .style(editor_borderless_style)
+            .style(editor_borderless_style);
+        scrollable(editor)
+            .height(Length::Fill)
+            .width(Length::Fill)
             .into()
     }
 
