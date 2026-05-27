@@ -27,6 +27,7 @@ use crate::editor::{self, Editor};
 use crate::sidebar::{self, Sidebar};
 use crate::syntax::SyntaxTheme;
 use crate::views::characters::{self as characters_view, CharactersView};
+use crate::views::locations::{self as locations_view, LocationsView};
 use crate::views::MainView;
 
 
@@ -51,6 +52,7 @@ pub(crate) struct App {
     credentials: Arc<dyn CredentialStore>,
     main_view: MainView,
     characters_view: CharactersView,
+    locations_view: LocationsView,
     /// Tracked here because Iced's `listen_with` filter is a plain `fn`
     /// pointer and can't see `App` state; we update this on
     /// `ModifiersChanged` events and read it on `WheelScrolled` to decide
@@ -65,6 +67,7 @@ pub(crate) enum Message {
     Sidebar(sidebar::Message),
     Assistant(assistant::Message),
     CharactersView(characters_view::Message),
+    LocationsView(locations_view::Message),
     /// Cycle through the available syntax themes (until a settings UI lands).
     #[allow(dead_code)] // wired by a settings UI later (#11 / TBD)
     CycleSyntaxTheme,
@@ -105,6 +108,7 @@ impl App {
             credentials,
             main_view: MainView::Editor,
             characters_view: CharactersView::new(),
+            locations_view: LocationsView::new(),
             modifiers: Modifiers::default(),
         };
 
@@ -166,6 +170,7 @@ impl App {
             Message::Sidebar(msg) => self.handle_sidebar_message(msg),
             Message::Assistant(msg) => self.handle_assistant_message(msg),
             Message::CharactersView(msg) => self.handle_characters_view_message(msg),
+            Message::LocationsView(msg) => self.handle_locations_view_message(msg),
             Message::CycleSyntaxTheme => {
                 let next = next_syntax_theme(self.settings.syntax_theme);
                 self.settings.syntax_theme = next;
@@ -219,6 +224,9 @@ impl App {
                         MainView::Characters => {
                             self.characters_view.view().map(Message::CharactersView)
                         }
+                        MainView::Locations => {
+                            self.locations_view.view().map(Message::LocationsView)
+                        }
                     };
                     container(body)
                         .width(Length::Fill)
@@ -251,9 +259,11 @@ impl App {
         let mut tasks: Vec<Task<Message>> = Vec::new();
         if let Some(view) = reaction.show_view {
             self.main_view = view;
-            if matches!(view, MainView::Characters) {
-                if let Some(p) = self.project.as_ref() {
-                    self.characters_view.refresh_cards(p);
+            if let Some(p) = self.project.as_ref() {
+                match view {
+                    MainView::Characters => self.characters_view.refresh_cards(p),
+                    MainView::Locations => self.locations_view.refresh_cards(p),
+                    MainView::Editor => {}
                 }
             }
         }
@@ -307,6 +317,7 @@ impl App {
                 self.refresh_suggestions();
                 if let Some(p) = self.project.as_ref() {
                     self.characters_view.refresh_cards(p);
+                    self.locations_view.refresh_cards(p);
                 }
                 Task::done(Message::Sidebar(sidebar::Message::ProjectLoaded {
                     root,
@@ -366,6 +377,27 @@ impl App {
             self.run_import();
             if let Some(p) = self.project.as_ref() {
                 self.characters_view.refresh_cards(p);
+            }
+            self.refresh_entities_in_scene();
+        }
+        task
+    }
+
+    fn handle_locations_view_message(
+        &mut self,
+        msg: locations_view::Message,
+    ) -> Task<Message> {
+        let project_root = self.sidebar.project_root().map(std::path::Path::to_path_buf);
+        let reaction = self.locations_view.update(
+            msg,
+            self.project.as_ref(),
+            project_root.as_deref(),
+        );
+        let task = reaction.task.map(Message::LocationsView);
+        if reaction.fs_changed {
+            self.run_import();
+            if let Some(p) = self.project.as_ref() {
+                self.locations_view.refresh_cards(p);
             }
             self.refresh_entities_in_scene();
         }

@@ -61,6 +61,7 @@ pub(crate) enum Message {
     /// User wants to switch the main view (Editor / Characters / ...).
     ShowEditor,
     ShowCharacters,
+    ShowLocations,
     /// Result of the file-picker future. Handled by the app shell, which
     /// opens the project and then fires [`Self::ProjectLoaded`] with the
     /// real scan back into us.
@@ -180,6 +181,10 @@ impl Sidebar {
             },
             Message::ShowCharacters => SidebarReaction {
                 show_view: Some(crate::views::MainView::Characters),
+                ..Default::default()
+            },
+            Message::ShowLocations => SidebarReaction {
+                show_view: Some(crate::views::MainView::Locations),
                 ..Default::default()
             },
             Message::ProjectPicked(None) => SidebarReaction::default(),
@@ -374,6 +379,10 @@ impl Sidebar {
                     .width(Length::FillPortion(1)),
                 button(text("Characters").size(12))
                     .on_press(Message::ShowCharacters)
+                    .style(button::secondary)
+                    .width(Length::FillPortion(1)),
+                button(text("Locations").size(12))
+                    .on_press(Message::ShowLocations)
                     .style(button::secondary)
                     .width(Length::FillPortion(1)),
             ]

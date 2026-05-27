@@ -6,6 +6,7 @@
 //! built up across #18–#24.
 
 pub(crate) mod characters;
+pub(crate) mod locations;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum MainView {
@@ -14,6 +15,8 @@ pub(crate) enum MainView {
     Editor,
     /// All characters in the project — cards + structured editor.
     Characters,
+    /// All locations in the project.
+    Locations,
 }
 
 // MainView::label() will be useful once we render a tab strip with the
