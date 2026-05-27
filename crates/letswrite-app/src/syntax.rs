@@ -242,7 +242,7 @@ enum LineState {
 pub(crate) struct MarkdownHighlighter {
     settings: Settings,
     line_states: Vec<LineState>,
-    current_line: usize,
+    current_line: std::cell::Cell<usize>,
 }
 
 impl std::fmt::Debug for MarkdownHighlighter {
@@ -270,7 +270,7 @@ impl Highlighter for MarkdownHighlighter {
         Self {
             settings: settings.clone(),
             line_states: vec![LineState::Initial],
-            current_line: 0,
+            current_line: std::cell::Cell::new(0),
         }
     }
 
@@ -285,25 +285,20 @@ impl Highlighter for MarkdownHighlighter {
         // Discard cached state from `line` onwards; subsequent highlight_line
         // calls will rebuild it.
         self.line_states.truncate(line + 1);
-        self.current_line = line;
+        self.current_line.set(line);
     }
 
     fn highlight_line(&mut self, line: &str) -> Self::Iterator<'_> {
-        // The state at the start of this line is the cached state for index
-        // `current_line` (or Initial if we've never seen this line).
-        let entry_state = self
-            .line_states
-            .get(self.current_line)
-            .copied()
-            .unwrap_or(LineState::Initial);
+        let cur = self.current_line.get();
+        let entry_state =
+            self.line_states.get(cur).copied().unwrap_or(LineState::Initial);
         let (tokens, exit_state) = scan_line(line, entry_state);
-        // Cache the *exit* state at index current_line + 1.
-        let next_idx = self.current_line + 1;
+        let next_idx = cur + 1;
         if next_idx >= self.line_states.len() {
             self.line_states.resize(next_idx + 1, LineState::Body);
         }
         self.line_states[next_idx] = exit_state;
-        self.current_line += 1;
+        self.current_line.set(next_idx);
         let theme = self.settings.theme;
         tokens
             .into_iter()
@@ -313,7 +308,21 @@ impl Highlighter for MarkdownHighlighter {
     }
 
     fn current_line(&self) -> usize {
-        self.current_line
+        // Iced's text editor driver loops `current_line..=last_visible_line`
+        // and only processes lines in that window — assuming everything
+        // before has been processed already and its AttrsList is intact.
+        // But cosmic-text can drop AttrsList when layout/size/font changes
+        // (e.g. on the second paint when the real bounds are known), and
+        // the driver does NOT call change_line() to tell us. The visible
+        // result: highlighting flashes in on first paint, then disappears.
+        //
+        // We work around it by always advertising 0 here, then resetting our
+        // own line cursor in lockstep. The driver will re-process from line
+        // 0 on every paint. Cost: re-scanning the visible window per paint
+        // (typically <100 lines, negligible). Our line_states cache means
+        // cross-line state (frontmatter / fenced code) is O(1) once primed.
+        self.current_line.set(0);
+        0
     }
 }
 
@@ -926,6 +935,38 @@ mod tests {
             .filter(|(_, k)| matches!(k, TokenKind::Dialogue))
             .count();
         assert_eq!(count, 2, "got: {toks:?}");
+    }
+
+    #[test]
+    fn driver_emulation_real_chapter_start() {
+        // Emulate what Iced's text editor does: pass the file's lines in
+        // order through highlight_line, and check that the first H1 produces
+        // a HeadingMarker(1) span.
+        let mut h = MarkdownHighlighter::new(&Settings {
+            theme: SyntaxTheme::default(),
+        });
+        let l0: Vec<_> = h.highlight_line("# Chapter 2 — The Ghost File").collect();
+        let l1: Vec<_> = h.highlight_line("").collect();
+        let l2: Vec<_> = h.highlight_line("## Beat 1: The Fog").collect();
+        let l3: Vec<_> = h.highlight_line("").collect();
+        let l4: Vec<_> = h.highlight_line("The fog was supposed to burn off by nine.").collect();
+        let _ = (l1, l3, l4);
+        assert!(
+            l0.iter().any(|(_, (k, _))| matches!(k, TokenKind::HeadingMarker(1))),
+            "expected H1 marker, got: {l0:?}"
+        );
+        assert!(
+            l0.iter().any(|(_, (k, _))| matches!(k, TokenKind::HeadingText(1))),
+            "expected H1 text, got: {l0:?}"
+        );
+        assert!(
+            l2.iter().any(|(_, (k, _))| matches!(k, TokenKind::HeadingMarker(2))),
+            "expected H2 marker on Beat 1, got: {l2:?}"
+        );
+        assert!(
+            l2.iter().any(|(_, (k, _))| matches!(k, TokenKind::HeadingText(2))),
+            "expected H2 text on Beat 1, got: {l2:?}"
+        );
     }
 
     #[test]
