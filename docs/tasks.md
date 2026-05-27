@@ -14,7 +14,7 @@ Master plan for building letswrite, a Rust/Iced book-writing app. Phased so each
 - [x] **#32 P1.1c** Highlight direct-speech quotes in editor — *blocked by #31*
 - [x] **#33 P1.1d** Ctrl+scroll to change editor font size — *blocked by #5*
 - [x] **#34 P1.1e** Fix highlight disappearing after layout reflow — *blocked by #31*
-- [ ] **#6 P1.2** Markdown preview mode (toggle) — *blocked by #5*
+- [x] **#6 P1.2** Markdown preview mode (toggle) — *blocked by #5*
 - [ ] **#7 P1.3** Project / file navigation sidebar — *blocked by #4*
 - [ ] **#8 P1.4** Obsidian vault importer (The-Threshold) — *blocked by #4, #7*
 - [ ] **#9 P1.5** Snapshots (per-document versioning) — *blocked by #5*
