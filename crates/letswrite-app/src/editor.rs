@@ -107,6 +107,10 @@ pub(crate) struct Editor {
     syntax_theme: SyntaxTheme,
     font_size: u16,
     view_mode: ViewMode,
+    /// Byte offset the cursor should land on after the next document
+    /// load completes. Set by `jump_to_offset` when no document is open
+    /// yet; applied in `Message::Loaded(Ok)` and cleared.
+    pending_jump_offset: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +148,52 @@ impl Editor {
             syntax_theme,
             font_size,
             view_mode: ViewMode::Edit,
+            pending_jump_offset: None,
+        }
+    }
+
+    /// Jump the cursor to `offset` (byte position in the body) of the
+    /// currently-open document. If no document is open yet, the offset
+    /// is stashed and applied after the next `Message::Loaded(Ok)`.
+    /// Returns a `Task` because the caller chains it with `open_path`.
+    pub(crate) fn jump_to_offset(&mut self, offset: usize) -> Task<Message> {
+        if self.open.is_some() {
+            // Apply immediately on the open buffer.
+            self.apply_jump(offset);
+        } else {
+            // No doc yet — stash for after the next Loaded(Ok).
+            self.pending_jump_offset = Some(offset);
+        }
+        Task::none()
+    }
+
+    /// Move the cursor of the open buffer to `offset` by issuing
+    /// `Action::Move` actions. `text_editor` has no random-access cursor
+    /// move, so we go to document-start then walk forward; for big
+    /// documents this is still fast (it's just incrementing counters in
+    /// cosmic-text).
+    fn apply_jump(&mut self, offset: usize) {
+        use iced::widget::text_editor::{Action, Motion};
+        let Some(open) = self.open.as_mut() else {
+            return;
+        };
+        let body = open.content.text();
+        // Translate the byte offset into (line, column).
+        let (line, column) = offset_to_line_column(&body, offset);
+        // Jump to the start of the buffer, then down `line` lines, then
+        // right `column` characters. `Edit::Action::Move(Motion::...)`
+        // is what the text_editor exposes.
+        open.content.perform(Action::Move(Motion::DocumentStart));
+        for _ in 0..line {
+            open.content.perform(Action::Move(Motion::Down));
+        }
+        // Iced's Right motion is by grapheme; column here is byte-based.
+        // Approximate by walking columns one char at a time using the
+        // line's char count.
+        let line_text = body.lines().nth(line).unwrap_or("");
+        let char_col = byte_offset_to_char_index(line_text, column);
+        for _ in 0..char_col {
+            open.content.perform(Action::Move(Motion::Right));
         }
     }
 
@@ -201,6 +251,9 @@ impl Editor {
         }
     }
 
+    // Single dispatch match over editor messages; splitting it for the
+    // lint's sake hurts readability.
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Action(action) => {
@@ -252,6 +305,9 @@ impl Editor {
                     "document loaded"
                 );
                 self.open = Some(open);
+                if let Some(offset) = self.pending_jump_offset.take() {
+                    self.apply_jump(offset);
+                }
                 Task::none()
             }
             Message::Loaded(Err(err)) => {
@@ -379,6 +435,32 @@ impl Editor {
             .height(Length::Fill)
             .into()
     }
+}
+
+/// Translate a byte offset into the document body into `(line, byte_column)`.
+/// Lines are split on `\n`; `byte_column` is the byte index inside the line.
+fn offset_to_line_column(body: &str, offset: usize) -> (usize, usize) {
+    let offset = offset.min(body.len());
+    let mut line = 0;
+    let mut line_start = 0;
+    for (i, b) in body.as_bytes().iter().enumerate() {
+        if i >= offset {
+            break;
+        }
+        if *b == b'\n' {
+            line += 1;
+            line_start = i + 1;
+        }
+    }
+    (line, offset - line_start)
+}
+
+/// Convert a byte column into a char-grapheme-ish count for the given
+/// line. We need this because Iced's `Motion::Right` advances one
+/// grapheme at a time; we use chars as a close-enough proxy.
+fn byte_offset_to_char_index(line: &str, byte_col: usize) -> usize {
+    let byte_col = byte_col.min(line.len());
+    line[..byte_col].chars().count()
 }
 
 fn view_mode_toolbar(current: ViewMode) -> Element<'static, Message> {

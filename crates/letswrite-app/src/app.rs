@@ -545,8 +545,18 @@ impl App {
             assistant::Message::SuggestionReject(id) => Some(*id),
             _ => None,
         };
+        let jump_id = match &msg {
+            assistant::Message::SuggestionJump(id) => Some(*id),
+            _ => None,
+        };
         let context = self.build_assistant_context();
         let task = self.assistant.update(msg, context).map(Message::Assistant);
+        let mut tasks: Vec<Task<Message>> = vec![task];
+        if let Some(id) = jump_id {
+            if let Some(jump_task) = self.jump_to_suggestion(id) {
+                tasks.push(jump_task);
+            }
+        }
         if let Some(id) = confirm_id {
             if let Some(project) = self.project.as_mut() {
                 if let Err(err) = letswrite_import::confirm(project, id) {
@@ -590,7 +600,38 @@ impl App {
                 }
             }
         }
-        task
+        Task::batch(tasks)
+    }
+
+    /// Open the suggestion's document (switching to the editor view if
+    /// needed) and queue cursor-jump actions to land on the matched span.
+    fn jump_to_suggestion(&mut self, mention_id: i64) -> Option<Task<Message>> {
+        let suggestion = self
+            .load_suggestions()
+            .into_iter()
+            .find(|s| s.mention_id == mention_id)?;
+        let root = self.sidebar.project_root()?.to_path_buf();
+        let abs_path = root.join(&suggestion.rel_path);
+
+        self.main_view = MainView::Editor;
+
+        let current_rel = self.editor.snapshot().rel_path;
+        let already_open = current_rel.as_deref() == Some(suggestion.rel_path.as_str());
+
+        let jump_task = self
+            .editor
+            .jump_to_offset(suggestion.start_offset)
+            .map(Message::Editor);
+
+        if already_open {
+            // Document is in the editor; just jump.
+            Some(jump_task)
+        } else {
+            // Open the document; the editor's load is async so chain the
+            // jump after it resolves.
+            let open_task = Editor::open_path(root, abs_path).map(Message::Editor);
+            Some(Task::batch([open_task, jump_task]))
+        }
     }
 
     fn refresh_entities_in_scene(&mut self) {
@@ -695,6 +736,8 @@ impl App {
                     entity_name,
                     matched_text,
                     context_snippet,
+                    start_offset: start_usize,
+                    rel_path: rel.clone(),
                 }
             })
             .collect()

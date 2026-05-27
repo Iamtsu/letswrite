@@ -61,6 +61,13 @@ pub(crate) struct PendingSuggestion {
     pub matched_text: String,
     /// Short prose context around the match for the confirmation UI.
     pub context_snippet: String,
+    /// Byte offset of the match in the document body — used by the shell
+    /// to jump the editor cursor to the right spot when the user clicks
+    /// the suggestion.
+    pub start_offset: usize,
+    /// Path of the document containing the match, relative to the project
+    /// root. Lets the shell open it if it isn't already open.
+    pub rel_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +81,9 @@ pub(crate) enum Message {
     SuggestionConfirm(i64),
     /// User rejected a pending name-match suggestion.
     SuggestionReject(i64),
+    /// User clicked the suggestion (or its "Jump" button) to view the
+    /// match in the editor.
+    SuggestionJump(i64),
     /// User picked a preset; fill the composer + tag the next submit.
     PresetSelected(&'static str),
     /// Streamed event from the agent. The `turn` index identifies which
@@ -221,9 +231,11 @@ impl Assistant {
                 self.tab = tab;
                 Task::none()
             }
-            Message::SuggestionConfirm(_) | Message::SuggestionReject(_) => {
-                // The shell handles the DB write and re-supplies the
-                // suggestion list. We just consume the message.
+            Message::SuggestionConfirm(_)
+            | Message::SuggestionReject(_)
+            | Message::SuggestionJump(_) => {
+                // The shell handles the side effects (DB write, editor
+                // jump) by peeking at the message before we consume it.
                 Task::none()
             }
             Message::ApiKeyChanged(s) => {
@@ -475,12 +487,26 @@ fn suggestions_view(suggestions: &[PendingSuggestion]) -> Element<'_, Message> {
 
 fn render_suggestion_card(s: &PendingSuggestion) -> Element<'_, Message> {
     let id = s.mention_id;
+    // The header is itself a button — clicking the matched-text line
+    // jumps the editor to the spot in prose. Confirm/Reject stay as
+    // their own buttons below.
+    let header = button(
+        text(format!("{} → {}", s.matched_text, s.entity_name)).size(13),
+    )
+    .on_press(Message::SuggestionJump(id))
+    .style(button::text)
+    .width(Length::Fill);
     container(
         column![
-            text(format!("{} → {}", s.matched_text, s.entity_name)).size(13),
+            header,
             text(s.context_snippet.clone()).size(11),
             iced::widget::Row::new()
                 .spacing(4)
+                .push(
+                    button(text("Jump").size(11))
+                        .style(button::secondary)
+                        .on_press(Message::SuggestionJump(id)),
+                )
                 .push(
                     button(text("Confirm").size(11))
                         .style(button::primary)
