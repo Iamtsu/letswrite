@@ -22,7 +22,7 @@ Master plan for building letswrite, a Rust/Iced book-writing app. Phased so each
 - [ ] **#11 P1.7** Word count goals — *blocked by #5*
 
 ## Phase 2 — AI assistant (non-blocking, context-aware)
-- [ ] **#12 P2.1a** Design AI Assistant abstraction (Provider + Agent traits) — *blocked by #2*
+- [x] **#12 P2.1a** Design AI Assistant abstraction (Provider + Agent traits) — *blocked by #2*
 - [ ] **#30 P2.1b** Anthropic provider implementation — *blocked by #12*
 - [ ] **#13 P2.2** Right-column assistant panel — *blocked by #5, #30*
 - [ ] **#14 P2.3** Context builder for AI requests — *blocked by #5, #8, #13*

@@ -41,6 +41,7 @@ iced = { version = "0.13", features = ["tokio", "advanced", "markdown"] }
 # Async
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 async-trait = "0.1"
 

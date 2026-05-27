@@ -1,11 +1,44 @@
 //! AI assistant abstraction for letswrite.
 //!
-//! Two-tier design:
-//! - [`Provider`] is the low-level, vendor-specific contract (one impl per backend).
-//! - [`Agent`] is the high-level, UI-facing contract that wraps a Provider with
-//!   conversation state and context-assembly strategy.
+//! Two-tier design (see `docs/tasks.md` #12 and the project memory file
+//! `project_ai_abstraction.md` for the contract):
 //!
-//! See `docs/tasks.md` (#12) for the full design.
+//! - [`Provider`](provider::Provider) is the low-level, vendor-specific
+//!   contract. One implementation per backend (Anthropic, `OpenAI`, local
+//!   `llama.cpp`, …). Provider impls live in `letswrite_ai::providers::*`.
+//! - [`Agent`](agent::Agent) is the high-level, UI-facing contract. It
+//!   wraps a Provider with conversation state and context-assembly
+//!   strategy. The UI only ever depends on `Agent`.
+//!
+//! Hard rules:
+//!
+//! 1. UI code may NOT import provider impls — talks to `Agent` only.
+//! 2. Vendor-specific concerns (SSE event names, prompt caching headers,
+//!    model IDs) stay inside the provider module. They never leak into
+//!    `Agent`, [`AssistantContext`](context::AssistantContext), or the UI.
+//! 3. Credentials go through [`CredentialStore`](credentials::CredentialStore)
+//!    — the default is the OS keyring. Never logged, never written to
+//!    disk in plaintext, redacted in error messages.
+//! 4. Errors from a Provider map into the small abstraction-level
+//!    [`ProviderError`](error::ProviderError) enum. Higher layers don't
+//!    see raw HTTP status codes.
+//! 5. Cancellation is end-to-end via
+//!    [`tokio_util::sync::CancellationToken`].
 
-// Trait/type definitions land in #12. This module exists today to anchor the
-// dependency graph for the UI crate.
+pub mod agent;
+pub mod context;
+pub mod credentials;
+pub mod error;
+pub mod provider;
+pub mod wire;
+
+pub use agent::{Agent, AgentEvent, AgentInput, DefaultAgent};
+pub use context::{AssistantContext, ContextWindow, EntityInScene};
+pub use credentials::{CredentialError, CredentialStore, KeyringCredentialStore};
+pub use error::{ProviderError, RetryHint};
+pub use provider::{
+    Capabilities, ModelInfo, MockProvider, Provider, ProviderRegistry,
+};
+pub use wire::{
+    ChatDelta, ChatRequest, ContentBlock, Message, Role, Tool, ToolCall, Usage,
+};
