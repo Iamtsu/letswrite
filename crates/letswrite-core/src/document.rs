@@ -21,7 +21,7 @@ use crate::error::{Error, Result};
 
 /// What role a document plays inside a project. Derived from the top-level
 /// folder it lives in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DocumentKind {
     Chapter,
     Scene,

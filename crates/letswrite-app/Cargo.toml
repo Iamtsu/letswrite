@@ -23,3 +23,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 unicode-segmentation.workspace = true
 serde_yaml.workspace = true
+rfd.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

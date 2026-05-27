@@ -71,6 +71,7 @@ pulldown-cmark = { version = "0.12", default-features = false }
 notify = "7"
 notify-debouncer-full = "0.4"
 directories = "5"
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 
 # Credentials
 keyring = "3"

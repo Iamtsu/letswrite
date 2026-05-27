@@ -6,6 +6,7 @@
 
 mod app;
 mod editor;
+mod sidebar;
 mod syntax;
 
 use iced::Size;

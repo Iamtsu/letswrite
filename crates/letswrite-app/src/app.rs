@@ -1,6 +1,6 @@
 //! Application root: state, messages, and the two-column shell layout.
 
-// Scaffolding: parts of state are unused until #7 lands.
+// Scaffolding: parts of state are unused until later tasks land.
 #![allow(clippy::unused_self, clippy::missing_const_for_fn)]
 
 use std::path::PathBuf;
@@ -9,13 +9,14 @@ use iced::event::{self, Event};
 use iced::keyboard::{self, Modifiers};
 use iced::mouse;
 use iced::widget::pane_grid::{self, Configuration, Node, PaneGrid, ResizeEvent};
-use iced::widget::{button, column, container, horizontal_rule, text};
+use iced::widget::{container, text};
 use iced::{Background, Border, Color, Element, Length, Subscription, Task, Theme};
 
 use letswrite_core::settings::{ThemePreference, EDITOR_FONT_MAX, EDITOR_FONT_MIN};
-use letswrite_core::{I18n, Settings};
+use letswrite_core::{Project, Settings};
 
 use crate::editor::{self, Editor};
+use crate::sidebar::{self, Sidebar};
 use crate::syntax::SyntaxTheme;
 
 #[derive(Debug, Clone, Copy)]
@@ -28,10 +29,10 @@ enum Pane {
 #[derive(Debug)]
 pub(crate) struct App {
     settings: Settings,
-    i18n: I18n,
     panes: pane_grid::State<Pane>,
     editor: Editor,
-    project_root: Option<PathBuf>,
+    sidebar: Sidebar,
+    project: Option<Project>,
     /// Tracked here because Iced's `listen_with` filter is a plain `fn`
     /// pointer and can't see `App` state; we update this on
     /// `ModifiersChanged` events and read it on `WheelScrolled` to decide
@@ -43,10 +44,9 @@ pub(crate) struct App {
 pub(crate) enum Message {
     PaneResized(ResizeEvent),
     Editor(editor::Message),
-    /// Temporary: open the dogfood chapter from The-Threshold if it exists.
-    /// Replaced by a real file picker in #7.
-    OpenDogfoodChapter,
+    Sidebar(sidebar::Message),
     /// Cycle through the available syntax themes (until a settings UI lands).
+    #[allow(dead_code)] // wired by a settings UI later (#11 / TBD)
     CycleSyntaxTheme,
     /// Global keyboard modifier state changed (Ctrl, Shift, Alt, …).
     ModifiersChanged(Modifiers),
@@ -61,41 +61,44 @@ impl App {
             tracing::warn!(%err, "could not load settings; using defaults");
             Settings::default()
         });
-        let i18n = I18n::with_language(settings.ui_language.clone()).unwrap_or_else(|err| {
-            tracing::error!(%err, "could not initialize i18n; UI will show key markers");
-            I18n::with_language("en".parse().expect("en is valid"))
-                .expect("english bundle should always parse")
-        });
-        tracing::info!(language = %i18n.current(), "i18n ready");
 
         let panes = build_panes(&settings);
-        let editor_placeholder = i18n.tr("editor-placeholder");
         let syntax_theme = SyntaxTheme::from_settings(settings.syntax_theme);
-        let editor = Editor::new(
-            editor_placeholder,
-            syntax_theme,
-            settings.window.editor_font_size,
-        );
+        let editor = Editor::new("(no document open)", syntax_theme, settings.window.editor_font_size);
+        let sidebar = Sidebar::new();
 
-        (
-            Self {
-                settings,
-                i18n,
-                panes,
-                editor,
-                project_root: None,
-                modifiers: Modifiers::default(),
-            },
-            Task::none(),
-        )
-    }
+        let mut app = Self {
+            settings,
+            panes,
+            editor,
+            sidebar,
+            project: None,
+            modifiers: Modifiers::default(),
+        };
 
-    pub(crate) fn subscription(&self) -> Subscription<Message> {
-        event::listen_with(global_event_filter)
+        // Auto-open the last project if it still exists. Each branch logs
+        // and calls a different method, so map_or_else doesn't fit cleanly.
+        #[allow(clippy::option_if_let_else)]
+        let init_task = if let Some(last) = app.settings.last_project.clone() {
+            if last.is_dir() {
+                tracing::info!(path = %last.display(), "auto-opening last project");
+                app.open_project(last)
+            } else {
+                tracing::warn!(path = %last.display(), "saved project no longer exists");
+                Task::none()
+            }
+        } else {
+            Task::none()
+        };
+
+        (app, init_task)
     }
 
     pub(crate) fn title(&self) -> String {
-        self.i18n.tr("app-title")
+        self.project.as_ref().map_or_else(
+            || "letswrite".to_owned(),
+            |p| format!("{} — letswrite", p.name()),
+        )
     }
 
     pub(crate) fn theme(&self) -> Theme {
@@ -103,6 +106,10 @@ impl App {
             ThemePreference::Dark | ThemePreference::System => Theme::Dark,
             ThemePreference::Light => Theme::Light,
         }
+    }
+
+    pub(crate) fn subscription(&self) -> Subscription<Message> {
+        event::listen_with(global_event_filter)
     }
 
     // Iced's update contract takes the message by value; clippy's
@@ -116,20 +123,7 @@ impl App {
                 Task::none()
             }
             Message::Editor(msg) => self.editor.update(msg).map(Message::Editor),
-            Message::OpenDogfoodChapter => {
-                let project_root =
-                    PathBuf::from("/home/tsu/Projects/private/The-Threshold");
-                let abs_path = project_root
-                    .join("Chapters")
-                    .join("Chapter 2")
-                    .join("Chapter 2 - The Ghost File.md");
-                if !abs_path.exists() {
-                    tracing::warn!(path = %abs_path.display(), "dogfood file missing");
-                    return Task::none();
-                }
-                self.project_root = Some(project_root.clone());
-                Editor::open_path(project_root, abs_path).map(Message::Editor)
-            }
+            Message::Sidebar(msg) => self.handle_sidebar_message(msg),
             Message::CycleSyntaxTheme => {
                 let next = next_syntax_theme(self.settings.syntax_theme);
                 self.settings.syntax_theme = next;
@@ -170,19 +164,19 @@ impl App {
     }
 
     pub(crate) fn view(&self) -> Element<'_, Message> {
-        let sidebar_heading = self.i18n.tr("sidebar-project-heading");
-        let sidebar_empty = self.i18n.tr("sidebar-no-project");
-        let assistant_label = self.i18n.tr("assistant-placeholder");
-
-        let pane_grid = PaneGrid::new(&self.panes, move |_id, pane, _is_maximized| {
+        let pane_grid = PaneGrid::new(&self.panes, |_id, pane, _is_maximized| {
             let body: Element<'_, Message> = match pane {
-                Pane::Sidebar => sidebar_view(sidebar_heading.clone(), sidebar_empty.clone()),
+                Pane::Sidebar => container(self.sidebar.view().map(Message::Sidebar))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(pane_surface_style)
+                    .into(),
                 Pane::Editor => container(self.editor.view().map(Message::Editor))
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .style(pane_surface_style)
                     .into(),
-                Pane::Assistant => placeholder_pane(assistant_label.clone()),
+                Pane::Assistant => placeholder_pane("Assistant pane — coming soon"),
             };
             pane_grid::Content::new(body)
         })
@@ -196,6 +190,82 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
+    }
+
+    fn handle_sidebar_message(&mut self, msg: sidebar::Message) -> Task<Message> {
+        // Special-case the picker result: the sidebar fires
+        // ProjectLoaded with an empty scan; we substitute the real scan
+        // after opening the project here in the shell.
+        if let sidebar::Message::ProjectLoaded { root, .. } = &msg {
+            return self.open_project(root.clone());
+        }
+        let reaction = self.sidebar.update(msg);
+        let mut tasks: Vec<Task<Message>> = Vec::new();
+        if reaction.fs_changed {
+            if let Some(project) = self.project.as_mut() {
+                if let Err(err) = project.reindex() {
+                    tracing::warn!(%err, "reindex after fs change failed");
+                }
+                tasks.push(self.refresh_sidebar());
+            }
+        }
+        if let Some(path) = reaction.open {
+            if let Some(root) = self.sidebar.project_root() {
+                let root = root.to_path_buf();
+                tasks.push(Editor::open_path(root, path).map(Message::Editor));
+            }
+        }
+        let sidebar_task = reaction.task.map(Message::Sidebar);
+        tasks.push(sidebar_task);
+        Task::batch(tasks)
+    }
+
+    fn open_project(&mut self, root: PathBuf) -> Task<Message> {
+        match Project::open(&root) {
+            Ok(mut project) => {
+                if let Err(err) = project.reindex() {
+                    tracing::warn!(%err, "initial reindex failed");
+                }
+                let name = project.name().to_owned();
+                let scan = project
+                    .scan()
+                    .into_iter()
+                    .map(|f| (f.kind, f.path))
+                    .collect::<Vec<_>>();
+                self.project = Some(project);
+                self.settings.last_project = Some(root.clone());
+                if let Err(err) = self.settings.save() {
+                    tracing::warn!(%err, "could not persist last project");
+                }
+                Task::done(Message::Sidebar(sidebar::Message::ProjectLoaded {
+                    root,
+                    name,
+                    scan,
+                }))
+            }
+            Err(err) => {
+                tracing::error!(%err, path = %root.display(), "could not open project");
+                Task::none()
+            }
+        }
+    }
+
+    fn refresh_sidebar(&self) -> Task<Message> {
+        let Some(project) = self.project.as_ref() else {
+            return Task::none();
+        };
+        let root = project.root().to_path_buf();
+        let name = project.name().to_owned();
+        let scan = project
+            .scan()
+            .into_iter()
+            .map(|f| (f.kind, f.path))
+            .collect::<Vec<_>>();
+        Task::done(Message::Sidebar(sidebar::Message::ProjectLoaded {
+            root,
+            name,
+            scan,
+        }))
     }
 
     /// Walk the pane tree and write the two split ratios into settings.
@@ -247,67 +317,7 @@ fn ratios_from_node(node: &Node) -> (Option<f32>, Option<f32>) {
     }
 }
 
-fn sidebar_view(heading: String, empty_label: String) -> Element<'static, Message> {
-    container(
-        column![
-            text(heading).size(14),
-            horizontal_rule(1),
-            text(empty_label).size(12),
-            // Temporary dogfood entry — replaced by real navigation in #7.
-            button(text("Open The Threshold / Chapter 2").size(12))
-                .on_press(Message::OpenDogfoodChapter),
-            horizontal_rule(1),
-            button(text("Cycle syntax theme").size(12))
-                .on_press(Message::CycleSyntaxTheme),
-        ]
-        .spacing(8)
-        .padding(12),
-    )
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .style(pane_surface_style)
-    .into()
-}
-
-/// Global event filter for the Iced subscription. Iced expects a plain `fn`
-/// pointer, so we surface raw events and let `update` consult `self.modifiers`
-/// to decide what to do with wheel scrolls.
-#[allow(clippy::needless_pass_by_value)]
-fn global_event_filter(
-    event: Event,
-    _status: event::Status,
-    _window: iced::window::Id,
-) -> Option<Message> {
-    match event {
-        Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
-            Some(Message::ModifiersChanged(m))
-        }
-        Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
-            // Iced gives us either Lines{x, y} or Pixels{x, y}; we only care
-            // about the y axis. Lines are usually ±1.0 per notch; pixels we
-            // approximate with a scale.
-            let y = match delta {
-                mouse::ScrollDelta::Lines { y, .. } => y,
-                mouse::ScrollDelta::Pixels { y, .. } => y / 15.0,
-            };
-            Some(Message::WheelScrolled(y))
-        }
-        _ => None,
-    }
-}
-
-const fn next_syntax_theme(
-    current: letswrite_core::settings::SyntaxTheme,
-) -> letswrite_core::settings::SyntaxTheme {
-    use letswrite_core::settings::SyntaxTheme as T;
-    match current {
-        T::ColorblindSafe => T::Solarized,
-        T::Solarized => T::HighContrast,
-        T::HighContrast => T::ColorblindSafe,
-    }
-}
-
-fn placeholder_pane(label: String) -> Element<'static, Message> {
+fn placeholder_pane(label: &'static str) -> Element<'static, Message> {
     container(text(label).size(13))
         .padding(16)
         .width(Length::Fill)
@@ -368,5 +378,43 @@ fn pane_surface_style(theme: &Theme) -> container::Style {
         background: Some(Background::Color(palette.background.base.color)),
         text_color: Some(palette.background.base.text),
         ..container::Style::default()
+    }
+}
+
+/// Global event filter for the Iced subscription. Iced expects a plain `fn`
+/// pointer, so we surface raw events and let `update` consult `self.modifiers`
+/// to decide what to do with wheel scrolls.
+#[allow(clippy::needless_pass_by_value)]
+fn global_event_filter(
+    event: Event,
+    _status: event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
+            Some(Message::ModifiersChanged(m))
+        }
+        Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+            // Iced gives us either Lines{x, y} or Pixels{x, y}; we only care
+            // about the y axis. Lines are usually ±1.0 per notch; pixels we
+            // approximate with a scale.
+            let y = match delta {
+                mouse::ScrollDelta::Lines { y, .. } => y,
+                mouse::ScrollDelta::Pixels { y, .. } => y / 15.0,
+            };
+            Some(Message::WheelScrolled(y))
+        }
+        _ => None,
+    }
+}
+
+const fn next_syntax_theme(
+    current: letswrite_core::settings::SyntaxTheme,
+) -> letswrite_core::settings::SyntaxTheme {
+    use letswrite_core::settings::SyntaxTheme as T;
+    match current {
+        T::ColorblindSafe => T::Solarized,
+        T::Solarized => T::HighContrast,
+        T::HighContrast => T::ColorblindSafe,
     }
 }
