@@ -20,6 +20,9 @@ tokio-stream.workspace = true
 tracing.workspace = true
 keyring.workspace = true
 unic-langid.workspace = true
+reqwest.workspace = true
+eventsource-stream.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+wiremock.workspace = true

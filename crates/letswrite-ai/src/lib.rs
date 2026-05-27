@@ -30,6 +30,7 @@ pub mod context;
 pub mod credentials;
 pub mod error;
 pub mod provider;
+pub mod providers;
 pub mod wire;
 
 pub use agent::{Agent, AgentEvent, AgentInput, DefaultAgent};
@@ -39,6 +40,7 @@ pub use error::{ProviderError, RetryHint};
 pub use provider::{
     Capabilities, ModelInfo, MockProvider, Provider, ProviderRegistry,
 };
+pub use providers::AnthropicProvider;
 pub use wire::{
     ChatDelta, ChatRequest, ContentBlock, Message, Role, Tool, ToolCall, Usage,
 };
