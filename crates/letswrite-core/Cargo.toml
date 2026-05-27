@@ -20,6 +20,8 @@ unic-langid.workspace = true
 fluent.workspace = true
 fluent-langneg.workspace = true
 intl-memoizer.workspace = true
+rusqlite.workspace = true
+refinery.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

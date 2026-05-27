@@ -5,7 +5,7 @@ Master plan for building letswrite, a Rust/Iced book-writing app. Phased so each
 ## Phase 0 — Foundations
 - [x] **#1 P0.1** Bootstrap Cargo workspace + Iced shell
 - [x] **#2 P0.2** Project scaffolding: settings, logging, error types — *blocked by #1*
-- [ ] **#3 P0.3** SQLite schema + migrations — *blocked by #2*
+- [x] **#3 P0.3** SQLite schema + migrations — *blocked by #2*
 - [ ] **#4 P0.4** Filesystem-first document model — *blocked by #3*
 
 ## Phase 1 — Editing (first dogfoodable slice)

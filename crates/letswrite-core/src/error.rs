@@ -44,6 +44,18 @@ pub enum Error {
 
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+
+    #[error("sqlite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+
+    #[error("migration error: {0}")]
+    Migration(String),
+}
+
+impl From<refinery::Error> for Error {
+    fn from(e: refinery::Error) -> Self {
+        Self::Migration(e.to_string())
+    }
 }
 
 impl Error {
