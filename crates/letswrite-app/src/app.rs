@@ -548,7 +548,38 @@ impl App {
 
     fn refresh_entities_in_scene(&mut self) {
         let context = self.build_assistant_context();
+        let present_names: Vec<String> = context
+            .entities_in_scene
+            .iter()
+            .filter(|e| e.kind == "character")
+            .map(|e| e.name.clone())
+            .collect();
         self.assistant.set_entities_in_scene(context.entities_in_scene);
+        let all = self.all_character_names();
+        self.assistant.set_minimap_state(&all, &present_names);
+    }
+
+    fn all_character_names(&self) -> Vec<String> {
+        let Some(project) = self.project.as_ref() else {
+            return Vec::new();
+        };
+        let conn = project.database().conn();
+        let mut stmt = match conn.prepare(
+            "SELECT name FROM entities
+              WHERE project_id = ?1 AND kind = 'character'
+              ORDER BY name",
+        ) {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::warn!(%err, "character list query failed");
+                return Vec::new();
+            }
+        };
+        stmt.query_map(rusqlite::params![project.id()], |r| {
+            r.get::<_, String>(0)
+        })
+        .map(|it| it.flatten().collect())
+        .unwrap_or_default()
     }
 
     fn refresh_suggestions(&mut self) {

@@ -18,6 +18,7 @@ use letswrite_ai::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::minimap::Minimap;
 use crate::presets::BUILT_INS;
 
 /// One turn in the conversation: a user input + the assistant's reply
@@ -115,6 +116,8 @@ pub(crate) struct Assistant {
     entities_in_scene: Vec<EntityInScene>,
     /// Pending `name_match` suggestions for the open document.
     suggestions: Vec<PendingSuggestion>,
+    /// Character constellation rendered as a header strip.
+    minimap: Minimap,
 }
 
 impl Assistant {
@@ -130,7 +133,18 @@ impl Assistant {
             tab: Tab::Chat,
             entities_in_scene: Vec::new(),
             suggestions: Vec::new(),
+            minimap: Minimap::new(),
         }
+    }
+
+    /// Update the minimap's constellation: every character in the project,
+    /// plus which of those are present in the current scene.
+    pub(crate) fn set_minimap_state(
+        &mut self,
+        all_characters: &[String],
+        present_names: &[String],
+    ) {
+        self.minimap.set_state(all_characters, present_names);
     }
 
     /// Refresh the characters-in-scene list (called by the shell when the
@@ -226,6 +240,7 @@ impl Assistant {
             col = col.push(text("(Set your Anthropic API key to enable the assistant.)").size(11));
         }
 
+        col = col.push(self.minimap.view());
         col = col.push(tab_bar(
             self.tab,
             self.entities_in_scene.len(),

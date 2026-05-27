@@ -8,6 +8,7 @@ mod app;
 mod assistant;
 mod context_builder;
 mod editor;
+mod minimap;
 mod presets;
 mod sidebar;
 mod syntax;
