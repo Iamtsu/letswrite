@@ -5,6 +5,7 @@
 #![allow(clippy::redundant_pub_crate)]
 
 mod app;
+mod editor;
 
 use iced::Size;
 use letswrite_core::Settings;

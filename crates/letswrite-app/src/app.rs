@@ -1,14 +1,18 @@
 //! Application root: state, messages, and the two-column shell layout.
 
-// Scaffolding: parts of state are unused until #5/#7 land.
+// Scaffolding: parts of state are unused until #7 lands.
 #![allow(clippy::unused_self, clippy::missing_const_for_fn)]
 
+use std::path::PathBuf;
+
 use iced::widget::pane_grid::{self, Configuration, Node, PaneGrid, ResizeEvent};
-use iced::widget::{column, container, horizontal_rule, text};
+use iced::widget::{button, column, container, horizontal_rule, text};
 use iced::{Background, Border, Color, Element, Length, Task, Theme};
 
 use letswrite_core::settings::ThemePreference;
 use letswrite_core::{I18n, Settings};
+
+use crate::editor::{self, Editor};
 
 #[derive(Debug, Clone, Copy)]
 enum Pane {
@@ -22,11 +26,17 @@ pub(crate) struct App {
     settings: Settings,
     i18n: I18n,
     panes: pane_grid::State<Pane>,
+    editor: Editor,
+    project_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
     PaneResized(ResizeEvent),
+    Editor(editor::Message),
+    /// Temporary: open the dogfood chapter from The-Threshold if it exists.
+    /// Replaced by a real file picker in #7.
+    OpenDogfoodChapter,
 }
 
 impl App {
@@ -43,8 +53,13 @@ impl App {
         tracing::info!(language = %i18n.current(), "i18n ready");
 
         let panes = build_panes(&settings);
+        let editor_placeholder = i18n.tr("editor-placeholder");
+        let editor = Editor::new(editor_placeholder);
 
-        (Self { settings, i18n, panes }, Task::none())
+        (
+            Self { settings, i18n, panes, editor, project_root: None },
+            Task::none(),
+        )
     }
 
     pub(crate) fn title(&self) -> String {
@@ -66,25 +81,39 @@ impl App {
             Message::PaneResized(ResizeEvent { split, ratio }) => {
                 self.panes.resize(split, ratio);
                 self.persist_ratios_from_layout();
+                Task::none()
+            }
+            Message::Editor(msg) => self.editor.update(msg).map(Message::Editor),
+            Message::OpenDogfoodChapter => {
+                let project_root =
+                    PathBuf::from("/home/tsu/Projects/private/The-Threshold");
+                let abs_path = project_root
+                    .join("Chapters")
+                    .join("Chapter 2")
+                    .join("Chapter 2 - The Ghost File.md");
+                if !abs_path.exists() {
+                    tracing::warn!(path = %abs_path.display(), "dogfood file missing");
+                    return Task::none();
+                }
+                self.project_root = Some(project_root.clone());
+                Editor::open_path(project_root, abs_path).map(Message::Editor)
             }
         }
-        Task::none()
     }
 
     pub(crate) fn view(&self) -> Element<'_, Message> {
-        // The pane_grid closure must produce `Content<'static-ish>` content
-        // that doesn't borrow from locals in `view`. We render each pane's
-        // label via the i18n bundle in advance and move owned Strings into
-        // the closure.
         let sidebar_heading = self.i18n.tr("sidebar-project-heading");
         let sidebar_empty = self.i18n.tr("sidebar-no-project");
-        let editor_label = self.i18n.tr("editor-placeholder");
         let assistant_label = self.i18n.tr("assistant-placeholder");
 
         let pane_grid = PaneGrid::new(&self.panes, move |_id, pane, _is_maximized| {
             let body: Element<'_, Message> = match pane {
                 Pane::Sidebar => sidebar_view(sidebar_heading.clone(), sidebar_empty.clone()),
-                Pane::Editor => placeholder_pane(editor_label.clone()),
+                Pane::Editor => container(self.editor.view().map(Message::Editor))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(pane_surface_style)
+                    .into(),
                 Pane::Assistant => placeholder_pane(assistant_label.clone()),
             };
             pane_grid::Content::new(body)
@@ -93,9 +122,6 @@ impl App {
         .spacing(SPLITTER_THICKNESS)
         .style(splitter_highlight_style);
 
-        // The PaneGrid's `spacing` gaps render as negative space, so the
-        // background of the surrounding container shows through. Painting it
-        // light gray makes the splitter lines visible at rest.
         container(pane_grid)
             .padding(0)
             .style(splitter_background_style)
@@ -159,6 +185,9 @@ fn sidebar_view(heading: String, empty_label: String) -> Element<'static, Messag
             text(heading).size(14),
             horizontal_rule(1),
             text(empty_label).size(12),
+            // Temporary dogfood entry — replaced by real navigation in #7.
+            button(text("Open The Threshold / Chapter 2").size(12))
+                .on_press(Message::OpenDogfoodChapter),
         ]
         .spacing(8)
         .padding(12),
@@ -176,17 +205,6 @@ fn placeholder_pane(label: String) -> Element<'static, Message> {
         .height(Length::Fill)
         .style(pane_surface_style)
         .into()
-}
-
-/// Opaque pane background. Without this, panes inherit transparency and the
-/// splitter-gap color bleeds across the whole window.
-fn pane_surface_style(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
-    container::Style {
-        background: Some(Background::Color(palette.background.base.color)),
-        text_color: Some(palette.background.base.text),
-        ..container::Style::default()
-    }
 }
 
 /// Width of the splitter line at rest, in pixels.
@@ -230,5 +248,16 @@ fn splitter_highlight_style(theme: &Theme) -> pane_grid::Style {
             color: palette.primary.strong.color,
             width: f32::from(SPLITTER_THICKNESS),
         },
+    }
+}
+
+/// Opaque pane background. Without this, panes inherit transparency and the
+/// splitter-gap color bleeds across the whole window.
+fn pane_surface_style(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(palette.background.base.color)),
+        text_color: Some(palette.background.base.text),
+        ..container::Style::default()
     }
 }

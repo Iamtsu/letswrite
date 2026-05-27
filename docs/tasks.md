@@ -9,7 +9,7 @@ Master plan for building letswrite, a Rust/Iced book-writing app. Phased so each
 - [x] **#4 P0.4** Filesystem-first document model — *blocked by #3*
 
 ## Phase 1 — Editing (first dogfoodable slice)
-- [ ] **#5 P1.1** Markdown editor pane with frontmatter handling — *blocked by #4*
+- [x] **#5 P1.1** Markdown editor pane with frontmatter handling — *blocked by #4*
 - [ ] **#6 P1.2** Markdown preview mode (toggle) — *blocked by #5*
 - [ ] **#7 P1.3** Project / file navigation sidebar — *blocked by #4*
 - [ ] **#8 P1.4** Obsidian vault importer (The-Threshold) — *blocked by #4, #7*

@@ -2112,9 +2112,11 @@ dependencies = [
  "letswrite-ai",
  "letswrite-core",
  "letswrite-import",
+ "serde_yaml",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unicode-segmentation",
 ]
 
 [[package]]
