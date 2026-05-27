@@ -11,9 +11,12 @@
 //! project and rebuilds from scratch. The on-disk Markdown is the source
 //! of truth; if the index is stale, you re-import.
 
+mod detector;
 mod entities;
 mod mentions;
 mod scenes;
+
+pub use detector::{confirm, detect_for_document, reject, Detection};
 
 use rusqlite::params;
 

@@ -28,7 +28,7 @@ Master plan for building letswrite, a Rust/Iced book-writing app. Phased so each
 - [x] **#14 P2.3** Context builder for AI requests — *blocked by #5, #8, #13*
 - [x] **#15 P2.4** Quick-action prompts — *blocked by #13, #14*
 - [x] **#16 P2.5** Character hints panel — *blocked by #8, #13*
-- [ ] **#17 P2.6** Entity mention detection + confirmation flow — *blocked by #8*
+- [x] **#17 P2.6** Entity mention detection + confirmation flow — *blocked by #8*
 
 ## Phase 3 — Structural views
 - [ ] **#18 P3.1** Character overview & editor — *blocked by #8*

@@ -147,7 +147,11 @@ impl App {
                 Task::none()
             }
             Message::Editor(msg) => {
+                let is_save = matches!(msg, editor::Message::Saved(Ok(())));
                 let task = self.editor.update(msg).map(Message::Editor);
+                if is_save {
+                    self.run_mention_detection();
+                }
                 self.refresh_entities_in_scene();
                 task
             }
@@ -275,6 +279,7 @@ impl App {
                 // moves to a background task only if we hit slowness later.
                 self.run_import();
                 self.refresh_entities_in_scene();
+                self.refresh_suggestions();
                 Task::done(Message::Sidebar(sidebar::Message::ProjectLoaded {
                     root,
                     name,
@@ -298,10 +303,52 @@ impl App {
         }
     }
 
+    fn run_mention_detection(&mut self) {
+        let Some(project) = self.project.as_mut() else {
+            return;
+        };
+        let Some(rel) = self.editor.snapshot().rel_path else {
+            return;
+        };
+        let Some(root) = self.sidebar.project_root() else {
+            return;
+        };
+        let abs = root.join(rel);
+        match letswrite_import::detect_for_document(project, &abs) {
+            Ok(n) => tracing::debug!(suggestions = n, "mention detection ran"),
+            Err(err) => tracing::warn!(%err, "mention detection failed"),
+        }
+        self.refresh_suggestions();
+    }
+
     fn handle_assistant_message(&mut self, msg: assistant::Message) -> Task<Message> {
         let is_api_submit = matches!(msg, assistant::Message::ApiKeySubmit);
+        let confirm_id = match &msg {
+            assistant::Message::SuggestionConfirm(id) => Some(*id),
+            _ => None,
+        };
+        let reject_id = match &msg {
+            assistant::Message::SuggestionReject(id) => Some(*id),
+            _ => None,
+        };
         let context = self.build_assistant_context();
         let task = self.assistant.update(msg, context).map(Message::Assistant);
+        if let Some(id) = confirm_id {
+            if let Some(project) = self.project.as_mut() {
+                if let Err(err) = letswrite_import::confirm(project, id) {
+                    tracing::warn!(%err, "confirm mention failed");
+                }
+            }
+            self.refresh_suggestions();
+        }
+        if let Some(id) = reject_id {
+            if let Some(project) = self.project.as_mut() {
+                if let Err(err) = letswrite_import::reject(project, id) {
+                    tracing::warn!(%err, "reject mention failed");
+                }
+            }
+            self.refresh_suggestions();
+        }
         if is_api_submit {
             if let Some(key) = self.assistant.take_api_key_submission() {
                 if let Err(err) = self.credentials.set(ANTHROPIC_API_KEY, &key) {
@@ -319,6 +366,77 @@ impl App {
     fn refresh_entities_in_scene(&mut self) {
         let context = self.build_assistant_context();
         self.assistant.set_entities_in_scene(context.entities_in_scene);
+    }
+
+    fn refresh_suggestions(&mut self) {
+        let suggestions = self.load_suggestions();
+        self.assistant.set_suggestions(suggestions);
+    }
+
+    fn load_suggestions(&self) -> Vec<assistant::PendingSuggestion> {
+        let Some(project) = self.project.as_ref() else {
+            return Vec::new();
+        };
+        let Some(rel) = self.editor.snapshot().rel_path else {
+            return Vec::new();
+        };
+        let conn = project.database().conn();
+        let mut stmt = match conn.prepare(
+            "SELECT em.id, e.name, em.start_offset, em.end_offset
+               FROM entity_mentions em
+               JOIN entities e ON e.id = em.entity_id
+               JOIN documents d ON d.id = em.document_id
+              WHERE d.project_id = ?1
+                AND d.rel_path = ?2
+                AND em.source = 'name_match'
+              ORDER BY em.start_offset",
+        ) {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::warn!(%err, "suggestion query prepare failed");
+                return Vec::new();
+            }
+        };
+        let rows = match stmt.query_map(
+            rusqlite::params![project.id(), rel],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        ) {
+            Ok(r) => r,
+            Err(err) => {
+                tracing::warn!(%err, "suggestion query failed");
+                return Vec::new();
+            }
+        };
+        let Some(root) = self.sidebar.project_root() else {
+            return Vec::new();
+        };
+        let abs = root.join(&rel);
+        let body = std::fs::read_to_string(&abs).unwrap_or_default();
+        rows.flatten()
+            .map(|(mention_id, entity_name, start, end)| {
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let start_usize = start.max(0) as usize;
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let end_usize = end.max(0) as usize;
+                let matched_text =
+                    body.get(start_usize..end_usize).unwrap_or("").to_owned();
+                let context_snippet =
+                    extract_snippet(&body, start_usize, end_usize);
+                assistant::PendingSuggestion {
+                    mention_id,
+                    entity_name,
+                    matched_text,
+                    context_snippet,
+                }
+            })
+            .collect()
     }
 
     fn build_assistant_context(&self) -> AssistantContext {
@@ -479,6 +597,24 @@ fn global_event_filter(
         }
         _ => None,
     }
+}
+
+/// Extract a short prose snippet around the matched span for the
+/// suggestion-confirmation UI. Returns ~80 chars before + the match +
+/// ~80 chars after, clipped to char boundaries to avoid panics on UTF-8.
+fn extract_snippet(body: &str, start: usize, end: usize) -> String {
+    let snippet_start = clamp_to_char_boundary(body, start.saturating_sub(80));
+    let snippet_end = clamp_to_char_boundary(body, (end + 80).min(body.len()));
+    let raw = &body[snippet_start..snippet_end];
+    raw.replace('\n', " ").trim().to_owned()
+}
+
+fn clamp_to_char_boundary(s: &str, mut idx: usize) -> usize {
+    idx = idx.min(s.len());
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
 }
 
 /// Build the default Anthropic agent, or `None` if construction fails

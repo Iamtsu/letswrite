@@ -49,6 +49,17 @@ pub(crate) enum TurnState {
 pub(crate) enum Tab {
     Chat,
     Characters,
+    Suggestions,
+}
+
+/// One pending name-match suggestion the user can confirm or reject.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingSuggestion {
+    pub mention_id: i64,
+    pub entity_name: String,
+    pub matched_text: String,
+    /// Short prose context around the match for the confirmation UI.
+    pub context_snippet: String,
 }
 
 #[derive(Debug, Clone)]
@@ -56,8 +67,12 @@ pub(crate) enum Message {
     InputChanged(String),
     Submit,
     Cancel,
-    /// User switched between chat and the in-scene character list.
+    /// User switched between chat / characters / suggestions tabs.
     TabSelected(Tab),
+    /// User accepted a pending name-match suggestion.
+    SuggestionConfirm(i64),
+    /// User rejected a pending name-match suggestion.
+    SuggestionReject(i64),
     /// User picked a preset; fill the composer + tag the next submit.
     PresetSelected(&'static str),
     /// Streamed event from the agent. The `turn` index identifies which
@@ -98,6 +113,8 @@ pub(crate) struct Assistant {
     /// Characters present in the current scene; refreshed on each
     /// assistant interaction (the context-builder query already runs).
     entities_in_scene: Vec<EntityInScene>,
+    /// Pending `name_match` suggestions for the open document.
+    suggestions: Vec<PendingSuggestion>,
 }
 
 impl Assistant {
@@ -112,6 +129,7 @@ impl Assistant {
             needs_api_key,
             tab: Tab::Chat,
             entities_in_scene: Vec::new(),
+            suggestions: Vec::new(),
         }
     }
 
@@ -119,6 +137,10 @@ impl Assistant {
     /// editor's snapshot changes or context is rebuilt).
     pub(crate) fn set_entities_in_scene(&mut self, entities: Vec<EntityInScene>) {
         self.entities_in_scene = entities;
+    }
+
+    pub(crate) fn set_suggestions(&mut self, suggestions: Vec<PendingSuggestion>) {
+        self.suggestions = suggestions;
     }
 
     pub(crate) fn set_agent(&mut self, agent: Option<Arc<dyn Agent>>, needs_api_key: bool) {
@@ -172,6 +194,11 @@ impl Assistant {
                 self.tab = tab;
                 Task::none()
             }
+            Message::SuggestionConfirm(_) | Message::SuggestionReject(_) => {
+                // The shell handles the DB write and re-supplies the
+                // suggestion list. We just consume the message.
+                Task::none()
+            }
             Message::ApiKeyChanged(s) => {
                 self.api_key_draft = s;
                 Task::none()
@@ -199,7 +226,11 @@ impl Assistant {
             col = col.push(text("(Set your Anthropic API key to enable the assistant.)").size(11));
         }
 
-        col = col.push(tab_bar(self.tab, self.entities_in_scene.len()));
+        col = col.push(tab_bar(
+            self.tab,
+            self.entities_in_scene.len(),
+            self.suggestions.len(),
+        ));
 
         match self.tab {
             Tab::Chat => {
@@ -222,6 +253,13 @@ impl Assistant {
             Tab::Characters => {
                 col = col.push(
                     scrollable(characters_view(&self.entities_in_scene))
+                        .height(Length::Fill)
+                        .width(Length::Fill),
+                );
+            }
+            Tab::Suggestions => {
+                col = col.push(
+                    scrollable(suggestions_view(&self.suggestions))
                         .height(Length::Fill)
                         .width(Length::Fill),
                 );
@@ -331,13 +369,23 @@ fn api_key_prompt(draft: &str) -> Element<'_, Message> {
     .into()
 }
 
-fn tab_bar(active: Tab, character_count: usize) -> Element<'static, Message> {
+fn tab_bar(
+    active: Tab,
+    character_count: usize,
+    suggestion_count: usize,
+) -> Element<'static, Message> {
     let chat_style = if active == Tab::Chat { button::primary } else { button::secondary };
     let chars_style = if active == Tab::Characters { button::primary } else { button::secondary };
+    let suggest_style = if active == Tab::Suggestions { button::primary } else { button::secondary };
     let chars_label = if character_count > 0 {
         format!("In scene ({character_count})")
     } else {
         "In scene".to_owned()
+    };
+    let suggest_label = if suggestion_count > 0 {
+        format!("Suggestions ({suggestion_count})")
+    } else {
+        "Suggestions".to_owned()
     };
     container(
         iced::widget::Row::new()
@@ -351,8 +399,61 @@ fn tab_bar(active: Tab, character_count: usize) -> Element<'static, Message> {
                 button(text(chars_label).size(12))
                     .style(chars_style)
                     .on_press(Message::TabSelected(Tab::Characters)),
+            )
+            .push(
+                button(text(suggest_label).size(12))
+                    .style(suggest_style)
+                    .on_press(Message::TabSelected(Tab::Suggestions)),
             ),
     )
+    .into()
+}
+
+fn suggestions_view(suggestions: &[PendingSuggestion]) -> Element<'_, Message> {
+    if suggestions.is_empty() {
+        return column![
+            text("No pending suggestions.").size(12),
+            text(
+                "When you save a document, letswrite scans it for character / location names \
+                 that aren't yet wiki-linked. Matches show up here so you can confirm or \
+                 reject them.",
+            )
+            .size(11),
+        ]
+        .spacing(6)
+        .into();
+    }
+    let mut col = column![].spacing(8);
+    for suggestion in suggestions {
+        col = col.push(render_suggestion_card(suggestion));
+    }
+    col.into()
+}
+
+fn render_suggestion_card(s: &PendingSuggestion) -> Element<'_, Message> {
+    let id = s.mention_id;
+    container(
+        column![
+            text(format!("{} → {}", s.matched_text, s.entity_name)).size(13),
+            text(s.context_snippet.clone()).size(11),
+            iced::widget::Row::new()
+                .spacing(4)
+                .push(
+                    button(text("Confirm").size(11))
+                        .style(button::primary)
+                        .on_press(Message::SuggestionConfirm(id)),
+                )
+                .push(
+                    button(text("Reject").size(11))
+                        .style(button::secondary)
+                        .on_press(Message::SuggestionReject(id)),
+                ),
+        ]
+        .spacing(4),
+    )
+    .padding(8)
+    .style(assistant_bubble_style)
+    .width(Length::Fill)
     .into()
 }
 
