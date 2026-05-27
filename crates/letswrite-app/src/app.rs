@@ -29,6 +29,7 @@ use crate::syntax::SyntaxTheme;
 use crate::views::characters::{self as characters_view, CharactersView};
 use crate::views::corkboard::{self as corkboard_view, CorkboardView};
 use crate::views::locations::{self as locations_view, LocationsView};
+use crate::views::relationships::{self as relationships_view, RelationshipsView};
 use crate::views::timeline::{self as timeline_view, TimelineView};
 use crate::views::MainView;
 
@@ -57,6 +58,7 @@ pub(crate) struct App {
     locations_view: LocationsView,
     corkboard_view: CorkboardView,
     timeline_view: TimelineView,
+    relationships_view: RelationshipsView,
     /// Tracked here because Iced's `listen_with` filter is a plain `fn`
     /// pointer and can't see `App` state; we update this on
     /// `ModifiersChanged` events and read it on `WheelScrolled` to decide
@@ -74,6 +76,7 @@ pub(crate) enum Message {
     LocationsView(locations_view::Message),
     CorkboardView(corkboard_view::Message),
     TimelineView(timeline_view::Message),
+    RelationshipsView(relationships_view::Message),
     /// Cycle through the available syntax themes (until a settings UI lands).
     #[allow(dead_code)] // wired by a settings UI later (#11 / TBD)
     CycleSyntaxTheme,
@@ -117,6 +120,7 @@ impl App {
             locations_view: LocationsView::new(),
             corkboard_view: CorkboardView::new(),
             timeline_view: TimelineView::new(),
+            relationships_view: RelationshipsView::new(),
             modifiers: Modifiers::default(),
         };
 
@@ -181,6 +185,7 @@ impl App {
             Message::LocationsView(msg) => self.handle_locations_view_message(msg),
             Message::CorkboardView(msg) => self.handle_corkboard_view_message(msg),
             Message::TimelineView(msg) => self.handle_timeline_view_message(msg),
+            Message::RelationshipsView(msg) => self.handle_relationships_view_message(msg),
             Message::CycleSyntaxTheme => {
                 let next = next_syntax_theme(self.settings.syntax_theme);
                 self.settings.syntax_theme = next;
@@ -243,6 +248,10 @@ impl App {
                         MainView::Timeline => {
                             self.timeline_view.view().map(Message::TimelineView)
                         }
+                        MainView::Relationships => self
+                            .relationships_view
+                            .view()
+                            .map(Message::RelationshipsView),
                     };
                     container(body)
                         .width(Length::Fill)
@@ -285,6 +294,7 @@ impl App {
                         }
                     }
                     MainView::Timeline => self.timeline_view.refresh(p),
+                    MainView::Relationships => self.relationships_view.refresh(p),
                     MainView::Editor => {}
                 }
             }
@@ -344,6 +354,7 @@ impl App {
                         self.corkboard_view.refresh(p, root);
                     }
                     self.timeline_view.refresh(p);
+                    self.relationships_view.refresh(p);
                 }
                 Task::done(Message::Sidebar(sidebar::Message::ProjectLoaded {
                     root,
@@ -415,6 +426,25 @@ impl App {
     ) -> Task<Message> {
         let project_root = self.sidebar.project_root().map(std::path::Path::to_path_buf);
         let reaction = self.timeline_view.update(msg, project_root.as_deref());
+        let mut tasks: Vec<Task<Message>> = Vec::new();
+        if let Some(path) = reaction.open_document {
+            self.main_view = MainView::Editor;
+            if let Some(root) = self.sidebar.project_root() {
+                let root = root.to_path_buf();
+                tasks.push(Editor::open_path(root, path).map(Message::Editor));
+            }
+        }
+        Task::batch(tasks)
+    }
+
+    fn handle_relationships_view_message(
+        &mut self,
+        msg: relationships_view::Message,
+    ) -> Task<Message> {
+        let project_root = self.sidebar.project_root().map(std::path::Path::to_path_buf);
+        let reaction = self
+            .relationships_view
+            .update(msg, project_root.as_deref());
         let mut tasks: Vec<Task<Message>> = Vec::new();
         if let Some(path) = reaction.open_document {
             self.main_view = MainView::Editor;
