@@ -429,7 +429,24 @@ impl Editor {
                 format_highlight,
             )
             .style(editor_borderless_style);
-        scrollable(editor)
+
+        // Build the paragraph-marker gutter alongside the editor. It uses
+        // the same per-line height approximation as jump_to_offset.
+        let body = open.content.text();
+        let (cursor_line, _) = open.content.cursor_position();
+        let line_count = body.split('\n').count().max(1);
+        let line_height = f32::from(self.font_size) * 1.4;
+        #[allow(clippy::cast_precision_loss, clippy::suboptimal_flops)]
+        let gutter_height = (line_count as f32) * line_height + 32.0; // matches editor padding
+        let gutter = iced::widget::Canvas::new(ParagraphGutter {
+            line_count,
+            current_line: cursor_line,
+            font_size: self.font_size,
+        })
+        .width(Length::Fixed(GUTTER_WIDTH))
+        .height(Length::Fixed(gutter_height));
+
+        scrollable(row![gutter, editor].width(Length::Fill))
             .id(editor_scroll_id())
             .height(Length::Fill)
             .width(Length::Fill)
@@ -447,6 +464,66 @@ impl Editor {
         scrollable(container(view).padding(16).width(Length::Fill))
             .height(Length::Fill)
             .into()
+    }
+}
+
+/// Width of the paragraph-marker gutter to the left of the editor, in px.
+const GUTTER_WIDTH: f32 = 24.0;
+
+/// Tiny canvas widget that draws one `¶` glyph per logical paragraph
+/// down the left of the editor pane. The marker for the cursor's
+/// current paragraph is brighter.
+///
+/// Wrapped paragraphs only get one marker at their top — that's the
+/// signal we want, since the writer was confused by "the cursor moves
+/// to a new visible row but the line number doesn't change." Seeing
+/// the marker stay put confirms "yes, this is all one paragraph."
+struct ParagraphGutter {
+    line_count: usize,
+    current_line: usize,
+    font_size: u16,
+}
+
+impl<Message> iced::widget::canvas::Program<Message> for ParagraphGutter {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &iced::Renderer,
+        _theme: &iced::Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::Text as CanvasText;
+        let mut frame = iced::widget::canvas::Frame::new(renderer, bounds.size());
+        let line_height = f32::from(self.font_size) * 1.4;
+        // 16px top padding inside text_editor (set via .padding(16)) — match it
+        // so markers line up with the prose, not with the pane edge.
+        let top_padding = 16.0;
+        for line in 0..self.line_count {
+            #[allow(clippy::cast_precision_loss, clippy::suboptimal_flops)]
+            let y = top_padding + (line as f32) * line_height;
+            if y > bounds.height {
+                break;
+            }
+            let is_current = line == self.current_line;
+            let color = if is_current {
+                iced::Color::from_rgba(0.95, 0.78, 0.20, 0.95)
+            } else {
+                iced::Color::from_rgba(0.55, 0.55, 0.55, 0.45)
+            };
+            frame.fill_text(CanvasText {
+                content: "¶".to_owned(),
+                position: iced::Point::new(bounds.width / 2.0, y),
+                color,
+                size: iced::Pixels(f32::from(self.font_size) - 2.0),
+                horizontal_alignment: iced::alignment::Horizontal::Center,
+                vertical_alignment: iced::alignment::Vertical::Top,
+                ..CanvasText::default()
+            });
+        }
+        vec![frame.into_geometry()]
     }
 }
 
