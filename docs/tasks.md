@@ -12,6 +12,7 @@ Master plan for building letswrite, a Rust/Iced book-writing app. Phased so each
 - [x] **#5 P1.1** Markdown editor pane with frontmatter handling — *blocked by #4*
 - [x] **#31 P1.1b** Markdown syntax highlighting (3 themes incl. color-blind safe) — *blocked by #5*
 - [x] **#32 P1.1c** Highlight direct-speech quotes in editor — *blocked by #31*
+- [x] **#33 P1.1d** Ctrl+scroll to change editor font size — *blocked by #5*
 - [ ] **#6 P1.2** Markdown preview mode (toggle) — *blocked by #5*
 - [ ] **#7 P1.3** Project / file navigation sidebar — *blocked by #4*
 - [ ] **#8 P1.4** Obsidian vault importer (The-Threshold) — *blocked by #4, #7*

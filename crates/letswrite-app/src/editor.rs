@@ -71,6 +71,7 @@ pub(crate) struct Editor {
     open: Option<OpenDocument>,
     placeholder: String,
     syntax_theme: SyntaxTheme,
+    font_size: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -93,12 +94,25 @@ pub(crate) struct LoadedFile {
 }
 
 impl Editor {
-    pub(crate) fn new(placeholder: impl Into<String>, syntax_theme: SyntaxTheme) -> Self {
-        Self { open: None, placeholder: placeholder.into(), syntax_theme }
+    pub(crate) fn new(
+        placeholder: impl Into<String>,
+        syntax_theme: SyntaxTheme,
+        font_size: u16,
+    ) -> Self {
+        Self {
+            open: None,
+            placeholder: placeholder.into(),
+            syntax_theme,
+            font_size,
+        }
     }
 
     pub(crate) const fn set_syntax_theme(&mut self, theme: SyntaxTheme) {
         self.syntax_theme = theme;
+    }
+
+    pub(crate) const fn set_font_size(&mut self, size: u16) {
+        self.font_size = size;
     }
 
     /// Schedule a file load. The result comes back as `Message::Loaded`.
@@ -244,7 +258,7 @@ impl Editor {
             .height(Length::Fill)
             .padding(16)
             .font(Font::MONOSPACE)
-            .size(15)
+            .size(self.font_size)
             .on_action(Message::Action)
             .highlight_with::<MarkdownHighlighter>(
                 syntax::Settings { theme: self.syntax_theme },
@@ -322,7 +336,7 @@ mod tests {
 
     #[test]
     fn snapshot_is_default_when_no_file_open() {
-        let editor = Editor::new("placeholder", SyntaxTheme::default());
+        let editor = Editor::new("placeholder", SyntaxTheme::default(), 15);
         let snap = editor.snapshot();
         assert!(snap.rel_path.is_none());
         assert!(!snap.is_dirty);

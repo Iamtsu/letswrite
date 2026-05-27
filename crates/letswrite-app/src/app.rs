@@ -5,11 +5,14 @@
 
 use std::path::PathBuf;
 
+use iced::event::{self, Event};
+use iced::keyboard::{self, Modifiers};
+use iced::mouse;
 use iced::widget::pane_grid::{self, Configuration, Node, PaneGrid, ResizeEvent};
 use iced::widget::{button, column, container, horizontal_rule, text};
-use iced::{Background, Border, Color, Element, Length, Task, Theme};
+use iced::{Background, Border, Color, Element, Length, Subscription, Task, Theme};
 
-use letswrite_core::settings::ThemePreference;
+use letswrite_core::settings::{ThemePreference, EDITOR_FONT_MAX, EDITOR_FONT_MIN};
 use letswrite_core::{I18n, Settings};
 
 use crate::editor::{self, Editor};
@@ -29,6 +32,11 @@ pub(crate) struct App {
     panes: pane_grid::State<Pane>,
     editor: Editor,
     project_root: Option<PathBuf>,
+    /// Tracked here because Iced's `listen_with` filter is a plain `fn`
+    /// pointer and can't see `App` state; we update this on
+    /// `ModifiersChanged` events and read it on `WheelScrolled` to decide
+    /// whether to act.
+    modifiers: Modifiers,
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +48,11 @@ pub(crate) enum Message {
     OpenDogfoodChapter,
     /// Cycle through the available syntax themes (until a settings UI lands).
     CycleSyntaxTheme,
+    /// Global keyboard modifier state changed (Ctrl, Shift, Alt, …).
+    ModifiersChanged(Modifiers),
+    /// Mouse wheel scrolled by `delta` lines (positive = up). Only acted on
+    /// when Ctrl is held in [`Self::ModifiersChanged`].
+    WheelScrolled(f32),
 }
 
 impl App {
@@ -58,12 +71,27 @@ impl App {
         let panes = build_panes(&settings);
         let editor_placeholder = i18n.tr("editor-placeholder");
         let syntax_theme = SyntaxTheme::from_settings(settings.syntax_theme);
-        let editor = Editor::new(editor_placeholder, syntax_theme);
+        let editor = Editor::new(
+            editor_placeholder,
+            syntax_theme,
+            settings.window.editor_font_size,
+        );
 
         (
-            Self { settings, i18n, panes, editor, project_root: None },
+            Self {
+                settings,
+                i18n,
+                panes,
+                editor,
+                project_root: None,
+                modifiers: Modifiers::default(),
+            },
             Task::none(),
         )
+    }
+
+    pub(crate) fn subscription(&self) -> Subscription<Message> {
+        event::listen_with(global_event_filter)
     }
 
     pub(crate) fn title(&self) -> String {
@@ -109,6 +137,32 @@ impl App {
                 tracing::info!(theme = ?next, "syntax theme changed");
                 if let Err(err) = self.settings.save() {
                     tracing::warn!(%err, "could not persist syntax theme");
+                }
+                Task::none()
+            }
+            Message::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers;
+                Task::none()
+            }
+            Message::WheelScrolled(delta) => {
+                if !self.modifiers.control() || delta == 0.0 {
+                    return Task::none();
+                }
+                let current = self.settings.window.editor_font_size;
+                let step: i32 = if delta > 0.0 { 1 } else { -1 };
+                let next = i32::from(current)
+                    .saturating_add(step)
+                    .clamp(i32::from(EDITOR_FONT_MIN), i32::from(EDITOR_FONT_MAX));
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                let next_u16 = next as u16;
+                if next_u16 == current {
+                    return Task::none();
+                }
+                self.settings.window.editor_font_size = next_u16;
+                self.editor.set_font_size(next_u16);
+                tracing::debug!(font_size = next_u16, "editor font size changed");
+                if let Err(err) = self.settings.save() {
+                    tracing::warn!(%err, "could not persist editor font size");
                 }
                 Task::none()
             }
@@ -213,6 +267,33 @@ fn sidebar_view(heading: String, empty_label: String) -> Element<'static, Messag
     .height(Length::Fill)
     .style(pane_surface_style)
     .into()
+}
+
+/// Global event filter for the Iced subscription. Iced expects a plain `fn`
+/// pointer, so we surface raw events and let `update` consult `self.modifiers`
+/// to decide what to do with wheel scrolls.
+#[allow(clippy::needless_pass_by_value)]
+fn global_event_filter(
+    event: Event,
+    _status: event::Status,
+    _window: iced::window::Id,
+) -> Option<Message> {
+    match event {
+        Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
+            Some(Message::ModifiersChanged(m))
+        }
+        Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+            // Iced gives us either Lines{x, y} or Pixels{x, y}; we only care
+            // about the y axis. Lines are usually ±1.0 per notch; pixels we
+            // approximate with a scale.
+            let y = match delta {
+                mouse::ScrollDelta::Lines { y, .. } => y,
+                mouse::ScrollDelta::Pixels { y, .. } => y / 15.0,
+            };
+            Some(Message::WheelScrolled(y))
+        }
+        _ => None,
+    }
 }
 
 const fn next_syntax_theme(

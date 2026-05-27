@@ -69,7 +69,15 @@ pub struct WindowSettings {
     pub sidebar_ratio: f32,
     /// Fraction of the remaining (post-sidebar) width occupied by the editor (0.0..1.0).
     pub editor_ratio: f32,
+    /// Editor body font size in pixels. Adjusted live via Ctrl+scroll.
+    pub editor_font_size: u16,
 }
+
+/// Hard limits for `editor_font_size`. Picked to keep the editor readable at
+/// the small end and prevent accidental zoom-blowups at the large end.
+pub const EDITOR_FONT_MIN: u16 = 10;
+pub const EDITOR_FONT_MAX: u16 = 32;
+pub const EDITOR_FONT_DEFAULT: u16 = 15;
 
 impl Default for WindowSettings {
     fn default() -> Self {
@@ -78,6 +86,7 @@ impl Default for WindowSettings {
             height: 1100,
             sidebar_ratio: 0.16,
             editor_ratio: 0.66,
+            editor_font_size: EDITOR_FONT_DEFAULT,
         }
     }
 }
