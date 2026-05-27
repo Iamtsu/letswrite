@@ -56,6 +56,8 @@ enum Dialog {
 pub(crate) enum Message {
     /// User asked to pick a project directory.
     PickProject,
+    /// User asked to (re-)run the Markdown files importer on the open project.
+    Reimport,
     /// Result of the file-picker future. Handled by the app shell, which
     /// opens the project and then fires [`Self::ProjectLoaded`] with the
     /// real scan back into us.
@@ -100,6 +102,8 @@ pub(crate) struct SidebarReaction {
     pub open_project: Option<PathBuf>,
     /// Filesystem mutated — app should reindex and re-scan.
     pub fs_changed: bool,
+    /// User asked to (re-)run the importer.
+    pub reimport_requested: bool,
     /// Async task to run (e.g. the file picker future). `Task` doesn't
     /// implement `Default`/`Debug`, hence the manual construction below.
     pub task: Task<Message>,
@@ -111,6 +115,7 @@ impl Default for SidebarReaction {
             open: None,
             open_project: None,
             fs_changed: false,
+            reimport_requested: false,
             task: Task::none(),
         }
     }
@@ -122,6 +127,7 @@ impl std::fmt::Debug for SidebarReaction {
             .field("open", &self.open)
             .field("open_project", &self.open_project)
             .field("fs_changed", &self.fs_changed)
+            .field("reimport_requested", &self.reimport_requested)
             .finish_non_exhaustive()
     }
 }
@@ -158,6 +164,10 @@ impl Sidebar {
                 );
                 SidebarReaction { task, ..Default::default() }
             }
+            Message::Reimport => SidebarReaction {
+                reimport_requested: true,
+                ..Default::default()
+            },
             Message::ProjectPicked(None) => SidebarReaction::default(),
             Message::ProjectPicked(Some(path)) => {
                 // The shell observes the pick via [`SidebarReaction::open_project`]
@@ -333,9 +343,16 @@ impl Sidebar {
                 .size(14),
             ]
             .padding([0, 8]),
-            button(text("Open project…").size(12))
-                .on_press(Message::PickProject)
-                .width(Length::Fill),
+            row![
+                button(text("Open project…").size(12))
+                    .on_press(Message::PickProject)
+                    .width(Length::FillPortion(2)),
+                button(text("Re-index").size(12))
+                    .on_press(Message::Reimport)
+                    .style(button::secondary)
+                    .width(Length::FillPortion(1)),
+            ]
+            .spacing(4),
             horizontal_rule(1),
         ]
         .spacing(8)

@@ -14,6 +14,7 @@ use iced::{Background, Border, Color, Element, Length, Subscription, Task, Theme
 
 use letswrite_core::settings::{ThemePreference, EDITOR_FONT_MAX, EDITOR_FONT_MIN};
 use letswrite_core::{Project, Settings};
+use letswrite_import::import_project;
 
 use crate::editor::{self, Editor};
 use crate::sidebar::{self, Sidebar};
@@ -206,6 +207,9 @@ impl App {
                 tasks.push(self.refresh_sidebar());
             }
         }
+        if reaction.reimport_requested {
+            self.run_import();
+        }
         if let Some(path) = reaction.open {
             if let Some(root) = self.sidebar.project_root() {
                 let root = root.to_path_buf();
@@ -234,6 +238,10 @@ impl App {
                 if let Err(err) = self.settings.save() {
                     tracing::warn!(%err, "could not persist last project");
                 }
+                // Run the importer on open so entities/scenes/mentions are
+                // available immediately. Cheap for normal-sized projects;
+                // moves to a background task only if we hit slowness later.
+                self.run_import();
                 Task::done(Message::Sidebar(sidebar::Message::ProjectLoaded {
                     root,
                     name,
@@ -244,6 +252,16 @@ impl App {
                 tracing::error!(%err, path = %root.display(), "could not open project");
                 Task::none()
             }
+        }
+    }
+
+    fn run_import(&mut self) {
+        let Some(project) = self.project.as_mut() else {
+            return;
+        };
+        match import_project(project) {
+            Ok(report) => tracing::info!(?report, "import completed"),
+            Err(err) => tracing::error!(%err, "import failed"),
         }
     }
 

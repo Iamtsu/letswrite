@@ -16,7 +16,7 @@ Master plan for building letswrite, a Rust/Iced book-writing app. Phased so each
 - [x] **#34 P1.1e** Fix highlight disappearing after layout reflow — *blocked by #31*
 - [x] **#6 P1.2** Markdown preview mode (toggle) — *blocked by #5*
 - [x] **#7 P1.3** Project / file navigation sidebar — *blocked by #4*
-- [ ] **#8 P1.4** Markdown files importer — *blocked by #4, #7*
+- [x] **#8 P1.4** Markdown files importer — *blocked by #4, #7*
 - [ ] **#9 P1.5** Snapshots (per-document versioning) — *blocked by #5*
 - [ ] **#10 P1.6** Distraction-free / focus mode — *blocked by #5*
 - [ ] **#11 P1.7** Word count goals — *blocked by #5*
