@@ -417,6 +417,11 @@ impl Editor {
         // here, `text_editor` clamps to the parent and scrolls internally
         // without surfacing a bar — matching the Preview look needs the
         // outer scrollable.
+        //
+        // A line/paragraph gutter belongs here but cannot be built
+        // reliably against iced 0.13's text_editor — it doesn't expose
+        // visual-row metrics, so any side-mounted markers drift on wrap.
+        // See task #36 (custom canvas editor) for the real fix.
         let editor = TextEditor::new(&open.content)
             .placeholder("Start writing…")
             .height(Length::Shrink)
@@ -429,36 +434,7 @@ impl Editor {
                 format_highlight,
             )
             .style(editor_borderless_style);
-
-        // Build the line-marker gutter alongside the editor: one `>` per
-        // non-empty logical line, at the y-position of that line's top.
-        // Wrapped paragraphs only get one mark (at the top of the
-        // paragraph), so the mark stays put as the cursor moves within a
-        // wrapped block — that's the answer to the rising-Col confusion.
-        let body = open.content.text();
-        let (cursor_line, _) = open.content.cursor_position();
-        let nonempty_lines: Vec<usize> = body
-            .split('\n')
-            .enumerate()
-            .filter_map(|(i, line)| (!line.trim().is_empty()).then_some(i))
-            .collect();
-        let total_lines = body.split('\n').count().max(1);
-        let line_height = f32::from(self.font_size) * 1.3;
-        // Match the editor's 16px top/bottom padding so the gutter is
-        // tall enough for every line; otherwise the bottom marks get
-        // clipped.
-        #[allow(clippy::cast_precision_loss, clippy::suboptimal_flops)]
-        let gutter_height = (total_lines as f32) * line_height + 32.0;
-        let gutter = iced::widget::Canvas::new(LineMarkerGutter {
-            font_size: self.font_size,
-            line_height,
-            nonempty_lines,
-            current_line: cursor_line,
-        })
-        .width(Length::Fixed(GUTTER_WIDTH))
-        .height(Length::Fixed(gutter_height));
-
-        scrollable(row![gutter, editor].width(Length::Fill))
+        scrollable(editor)
             .id(editor_scroll_id())
             .height(Length::Fill)
             .width(Length::Fill)
@@ -476,66 +452,6 @@ impl Editor {
         scrollable(container(view).padding(16).width(Length::Fill))
             .height(Length::Fill)
             .into()
-    }
-}
-
-/// Width of the line-marker gutter to the left of the editor, in px.
-const GUTTER_WIDTH: f32 = 22.0;
-
-/// Tiny canvas widget that draws a `>` glyph at the top of each non-empty
-/// logical line. The mark for the cursor's current logical line glows.
-///
-/// Wrapped paragraphs get exactly one mark (at the top), so when the
-/// cursor moves through a wrapped block the mark stays put — that's the
-/// signal that explains the static Ln number while Col rises.
-struct LineMarkerGutter {
-    font_size: u16,
-    line_height: f32,
-    /// Indices (in `body.split('\n')` order) of lines that have content;
-    /// blank lines get no marker.
-    nonempty_lines: Vec<usize>,
-    current_line: usize,
-}
-
-impl<Message> iced::widget::canvas::Program<Message> for LineMarkerGutter {
-    type State = ();
-
-    fn draw(
-        &self,
-        _state: &Self::State,
-        renderer: &iced::Renderer,
-        _theme: &iced::Theme,
-        bounds: iced::Rectangle,
-        _cursor: iced::mouse::Cursor,
-    ) -> Vec<iced::widget::canvas::Geometry> {
-        use iced::widget::canvas::Text as CanvasText;
-        let mut frame = iced::widget::canvas::Frame::new(renderer, bounds.size());
-        // 16px top padding inside text_editor (set via .padding(16)) — match
-        // it so marks line up with the prose, not with the pane edge.
-        let top_padding = 16.0;
-        for &line in &self.nonempty_lines {
-            #[allow(clippy::cast_precision_loss, clippy::suboptimal_flops)]
-            let y = top_padding + (line as f32) * self.line_height;
-            if y > bounds.height {
-                break;
-            }
-            let is_current = line == self.current_line;
-            let color = if is_current {
-                iced::Color::from_rgba(0.95, 0.78, 0.20, 0.95)
-            } else {
-                iced::Color::from_rgba(0.55, 0.55, 0.55, 0.50)
-            };
-            frame.fill_text(CanvasText {
-                content: ">".to_owned(),
-                position: iced::Point::new(bounds.width / 2.0, y),
-                color,
-                size: iced::Pixels(f32::from(self.font_size)),
-                horizontal_alignment: iced::alignment::Horizontal::Center,
-                vertical_alignment: iced::alignment::Vertical::Top,
-                ..CanvasText::default()
-            });
-        }
-        vec![frame.into_geometry()]
     }
 }
 
