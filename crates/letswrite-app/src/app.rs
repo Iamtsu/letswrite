@@ -4,21 +4,30 @@
 #![allow(clippy::unused_self, clippy::missing_const_for_fn)]
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use iced::event::{self, Event};
 use iced::keyboard::{self, Modifiers};
 use iced::mouse;
 use iced::widget::pane_grid::{self, Configuration, Node, PaneGrid, ResizeEvent};
-use iced::widget::{container, text};
+use iced::widget::container;
 use iced::{Background, Border, Color, Element, Length, Subscription, Task, Theme};
 
+use letswrite_ai::{
+    Agent, AnthropicProvider, AssistantContext, CredentialStore, DefaultAgent,
+    KeyringCredentialStore, Provider,
+};
 use letswrite_core::settings::{ThemePreference, EDITOR_FONT_MAX, EDITOR_FONT_MIN};
 use letswrite_core::{Project, Settings};
 use letswrite_import::import_project;
 
+use crate::assistant::{self, Assistant};
 use crate::editor::{self, Editor};
 use crate::sidebar::{self, Sidebar};
 use crate::syntax::SyntaxTheme;
+
+const KEYRING_SERVICE: &str = "letswrite";
+const ANTHROPIC_API_KEY: &str = "anthropic-api-key";
 
 #[derive(Debug, Clone, Copy)]
 enum Pane {
@@ -33,7 +42,9 @@ pub(crate) struct App {
     panes: pane_grid::State<Pane>,
     editor: Editor,
     sidebar: Sidebar,
+    assistant: Assistant,
     project: Option<Project>,
+    credentials: Arc<dyn CredentialStore>,
     /// Tracked here because Iced's `listen_with` filter is a plain `fn`
     /// pointer and can't see `App` state; we update this on
     /// `ModifiersChanged` events and read it on `WheelScrolled` to decide
@@ -46,6 +57,7 @@ pub(crate) enum Message {
     PaneResized(ResizeEvent),
     Editor(editor::Message),
     Sidebar(sidebar::Message),
+    Assistant(assistant::Message),
     /// Cycle through the available syntax themes (until a settings UI lands).
     #[allow(dead_code)] // wired by a settings UI later (#11 / TBD)
     CycleSyntaxTheme,
@@ -68,12 +80,22 @@ impl App {
         let editor = Editor::new("(no document open)", syntax_theme, settings.window.editor_font_size);
         let sidebar = Sidebar::new();
 
+        // Credential store + agent. If the key isn't set yet, the
+        // Assistant renders an inline "enter API key" prompt.
+        let credentials: Arc<dyn CredentialStore> =
+            Arc::new(KeyringCredentialStore::new(KEYRING_SERVICE));
+        let needs_api_key = !key_present(&*credentials);
+        let agent = build_agent(Arc::clone(&credentials));
+        let assistant = Assistant::new(agent, needs_api_key);
+
         let mut app = Self {
             settings,
             panes,
             editor,
             sidebar,
+            assistant,
             project: None,
+            credentials,
             modifiers: Modifiers::default(),
         };
 
@@ -125,6 +147,7 @@ impl App {
             }
             Message::Editor(msg) => self.editor.update(msg).map(Message::Editor),
             Message::Sidebar(msg) => self.handle_sidebar_message(msg),
+            Message::Assistant(msg) => self.handle_assistant_message(msg),
             Message::CycleSyntaxTheme => {
                 let next = next_syntax_theme(self.settings.syntax_theme);
                 self.settings.syntax_theme = next;
@@ -177,7 +200,11 @@ impl App {
                     .height(Length::Fill)
                     .style(pane_surface_style)
                     .into(),
-                Pane::Assistant => placeholder_pane("Assistant pane — coming soon"),
+                Pane::Assistant => container(self.assistant.view().map(Message::Assistant))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(pane_surface_style)
+                    .into(),
             };
             pane_grid::Content::new(body)
         })
@@ -265,6 +292,24 @@ impl App {
         }
     }
 
+    fn handle_assistant_message(&mut self, msg: assistant::Message) -> Task<Message> {
+        let is_api_submit = matches!(msg, assistant::Message::ApiKeySubmit);
+        let context = AssistantContext::empty(); // proper context arrives in #14
+        let task = self.assistant.update(msg, context).map(Message::Assistant);
+        if is_api_submit {
+            if let Some(key) = self.assistant.take_api_key_submission() {
+                if let Err(err) = self.credentials.set(ANTHROPIC_API_KEY, &key) {
+                    tracing::error!(%err, "could not persist API key");
+                } else {
+                    tracing::info!("API key saved to keyring");
+                    let agent = build_agent(Arc::clone(&self.credentials));
+                    self.assistant.set_agent(agent, !key_present(&*self.credentials));
+                }
+            }
+        }
+        task
+    }
+
     fn refresh_sidebar(&self) -> Task<Message> {
         let Some(project) = self.project.as_ref() else {
             return Task::none();
@@ -330,15 +375,6 @@ fn ratios_from_node(node: &Node) -> (Option<f32>, Option<f32>) {
     } else {
         (None, None)
     }
-}
-
-fn placeholder_pane(label: &'static str) -> Element<'static, Message> {
-    container(text(label).size(13))
-        .padding(16)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .style(pane_surface_style)
-        .into()
 }
 
 /// Width of the splitter line at rest, in pixels.
@@ -421,6 +457,31 @@ fn global_event_filter(
         }
         _ => None,
     }
+}
+
+/// Build the default Anthropic agent, or `None` if construction fails
+/// (which only happens if the HTTP client can't be built — extremely rare).
+fn build_agent(credentials: Arc<dyn CredentialStore>) -> Option<Arc<dyn Agent>> {
+    match AnthropicProvider::new(credentials) {
+        Ok(provider) => {
+            // Pick the first available model as the default; the settings
+            // UI will let users choose later.
+            let model = provider
+                .models()
+                .first()
+                .map_or_else(|| "claude-sonnet-4-6".to_owned(), |m| m.id.clone());
+            let provider_arc: Arc<dyn Provider> = Arc::new(provider);
+            Some(Arc::new(DefaultAgent::new(provider_arc, model)))
+        }
+        Err(err) => {
+            tracing::error!(%err, "could not build Anthropic provider");
+            None
+        }
+    }
+}
+
+fn key_present(credentials: &dyn CredentialStore) -> bool {
+    matches!(credentials.get(ANTHROPIC_API_KEY), Ok(Some(_)))
 }
 
 const fn next_syntax_theme(

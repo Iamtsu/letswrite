@@ -5,6 +5,7 @@
 #![allow(clippy::redundant_pub_crate)]
 
 mod app;
+mod assistant;
 mod editor;
 mod sidebar;
 mod syntax;
