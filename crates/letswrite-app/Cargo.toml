@@ -1,0 +1,23 @@
+[package]
+name = "letswrite-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "letswrite"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+letswrite-core.workspace = true
+letswrite-ai.workspace = true
+letswrite-import.workspace = true
+
+iced.workspace = true
+tokio = { workspace = true }
+tracing.workspace = true
+tracing-subscriber.workspace = true

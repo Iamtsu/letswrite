@@ -1,0 +1,16 @@
+[package]
+name = "letswrite-import"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+letswrite-core.workspace = true
+serde = { workspace = true }
+serde_yaml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
