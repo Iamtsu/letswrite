@@ -6,6 +6,7 @@
 //! built up across #18–#24.
 
 pub(crate) mod characters;
+pub(crate) mod corkboard;
 pub(crate) mod locations;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -17,6 +18,8 @@ pub(crate) enum MainView {
     Characters,
     /// All locations in the project.
     Locations,
+    /// Scene cards / corkboard.
+    Corkboard,
 }
 
 // MainView::label() will be useful once we render a tab strip with the

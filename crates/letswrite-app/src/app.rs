@@ -27,6 +27,7 @@ use crate::editor::{self, Editor};
 use crate::sidebar::{self, Sidebar};
 use crate::syntax::SyntaxTheme;
 use crate::views::characters::{self as characters_view, CharactersView};
+use crate::views::corkboard::{self as corkboard_view, CorkboardView};
 use crate::views::locations::{self as locations_view, LocationsView};
 use crate::views::MainView;
 
@@ -53,6 +54,7 @@ pub(crate) struct App {
     main_view: MainView,
     characters_view: CharactersView,
     locations_view: LocationsView,
+    corkboard_view: CorkboardView,
     /// Tracked here because Iced's `listen_with` filter is a plain `fn`
     /// pointer and can't see `App` state; we update this on
     /// `ModifiersChanged` events and read it on `WheelScrolled` to decide
@@ -68,6 +70,7 @@ pub(crate) enum Message {
     Assistant(assistant::Message),
     CharactersView(characters_view::Message),
     LocationsView(locations_view::Message),
+    CorkboardView(corkboard_view::Message),
     /// Cycle through the available syntax themes (until a settings UI lands).
     #[allow(dead_code)] // wired by a settings UI later (#11 / TBD)
     CycleSyntaxTheme,
@@ -109,6 +112,7 @@ impl App {
             main_view: MainView::Editor,
             characters_view: CharactersView::new(),
             locations_view: LocationsView::new(),
+            corkboard_view: CorkboardView::new(),
             modifiers: Modifiers::default(),
         };
 
@@ -171,6 +175,7 @@ impl App {
             Message::Assistant(msg) => self.handle_assistant_message(msg),
             Message::CharactersView(msg) => self.handle_characters_view_message(msg),
             Message::LocationsView(msg) => self.handle_locations_view_message(msg),
+            Message::CorkboardView(msg) => self.handle_corkboard_view_message(msg),
             Message::CycleSyntaxTheme => {
                 let next = next_syntax_theme(self.settings.syntax_theme);
                 self.settings.syntax_theme = next;
@@ -227,6 +232,9 @@ impl App {
                         MainView::Locations => {
                             self.locations_view.view().map(Message::LocationsView)
                         }
+                        MainView::Corkboard => {
+                            self.corkboard_view.view().map(Message::CorkboardView)
+                        }
                     };
                     container(body)
                         .width(Length::Fill)
@@ -263,6 +271,11 @@ impl App {
                 match view {
                     MainView::Characters => self.characters_view.refresh_cards(p),
                     MainView::Locations => self.locations_view.refresh_cards(p),
+                    MainView::Corkboard => {
+                        if let Some(root) = self.sidebar.project_root() {
+                            self.corkboard_view.refresh(p, root);
+                        }
+                    }
                     MainView::Editor => {}
                 }
             }
@@ -318,6 +331,9 @@ impl App {
                 if let Some(p) = self.project.as_ref() {
                     self.characters_view.refresh_cards(p);
                     self.locations_view.refresh_cards(p);
+                    if let Some(root) = self.sidebar.project_root() {
+                        self.corkboard_view.refresh(p, root);
+                    }
                 }
                 Task::done(Message::Sidebar(sidebar::Message::ProjectLoaded {
                     root,
@@ -381,6 +397,33 @@ impl App {
             self.refresh_entities_in_scene();
         }
         task
+    }
+
+    fn handle_corkboard_view_message(
+        &mut self,
+        msg: corkboard_view::Message,
+    ) -> Task<Message> {
+        let project_root = self.sidebar.project_root().map(std::path::Path::to_path_buf);
+        let reaction = self.corkboard_view.update(
+            msg,
+            self.project.as_mut(),
+            project_root.as_deref(),
+        );
+        let mut tasks: Vec<Task<Message>> = Vec::new();
+        if reaction.fs_changed {
+            self.run_import();
+            if let (Some(p), Some(root)) = (self.project.as_ref(), project_root.as_deref()) {
+                self.corkboard_view.refresh(p, root);
+            }
+        }
+        if let Some(path) = reaction.open_document {
+            self.main_view = MainView::Editor;
+            if let Some(root) = self.sidebar.project_root() {
+                let root = root.to_path_buf();
+                tasks.push(Editor::open_path(root, path).map(Message::Editor));
+            }
+        }
+        Task::batch(tasks)
     }
 
     fn handle_locations_view_message(
