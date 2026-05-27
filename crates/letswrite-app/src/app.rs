@@ -29,6 +29,7 @@ use crate::syntax::SyntaxTheme;
 use crate::views::characters::{self as characters_view, CharactersView};
 use crate::views::corkboard::{self as corkboard_view, CorkboardView};
 use crate::views::locations::{self as locations_view, LocationsView};
+use crate::views::timeline::{self as timeline_view, TimelineView};
 use crate::views::MainView;
 
 
@@ -55,6 +56,7 @@ pub(crate) struct App {
     characters_view: CharactersView,
     locations_view: LocationsView,
     corkboard_view: CorkboardView,
+    timeline_view: TimelineView,
     /// Tracked here because Iced's `listen_with` filter is a plain `fn`
     /// pointer and can't see `App` state; we update this on
     /// `ModifiersChanged` events and read it on `WheelScrolled` to decide
@@ -71,6 +73,7 @@ pub(crate) enum Message {
     CharactersView(characters_view::Message),
     LocationsView(locations_view::Message),
     CorkboardView(corkboard_view::Message),
+    TimelineView(timeline_view::Message),
     /// Cycle through the available syntax themes (until a settings UI lands).
     #[allow(dead_code)] // wired by a settings UI later (#11 / TBD)
     CycleSyntaxTheme,
@@ -113,6 +116,7 @@ impl App {
             characters_view: CharactersView::new(),
             locations_view: LocationsView::new(),
             corkboard_view: CorkboardView::new(),
+            timeline_view: TimelineView::new(),
             modifiers: Modifiers::default(),
         };
 
@@ -176,6 +180,7 @@ impl App {
             Message::CharactersView(msg) => self.handle_characters_view_message(msg),
             Message::LocationsView(msg) => self.handle_locations_view_message(msg),
             Message::CorkboardView(msg) => self.handle_corkboard_view_message(msg),
+            Message::TimelineView(msg) => self.handle_timeline_view_message(msg),
             Message::CycleSyntaxTheme => {
                 let next = next_syntax_theme(self.settings.syntax_theme);
                 self.settings.syntax_theme = next;
@@ -235,6 +240,9 @@ impl App {
                         MainView::Corkboard => {
                             self.corkboard_view.view().map(Message::CorkboardView)
                         }
+                        MainView::Timeline => {
+                            self.timeline_view.view().map(Message::TimelineView)
+                        }
                     };
                     container(body)
                         .width(Length::Fill)
@@ -276,6 +284,7 @@ impl App {
                             self.corkboard_view.refresh(p, root);
                         }
                     }
+                    MainView::Timeline => self.timeline_view.refresh(p),
                     MainView::Editor => {}
                 }
             }
@@ -334,6 +343,7 @@ impl App {
                     if let Some(root) = self.sidebar.project_root() {
                         self.corkboard_view.refresh(p, root);
                     }
+                    self.timeline_view.refresh(p);
                 }
                 Task::done(Message::Sidebar(sidebar::Message::ProjectLoaded {
                     root,
@@ -397,6 +407,23 @@ impl App {
             self.refresh_entities_in_scene();
         }
         task
+    }
+
+    fn handle_timeline_view_message(
+        &mut self,
+        msg: timeline_view::Message,
+    ) -> Task<Message> {
+        let project_root = self.sidebar.project_root().map(std::path::Path::to_path_buf);
+        let reaction = self.timeline_view.update(msg, project_root.as_deref());
+        let mut tasks: Vec<Task<Message>> = Vec::new();
+        if let Some(path) = reaction.open_document {
+            self.main_view = MainView::Editor;
+            if let Some(root) = self.sidebar.project_root() {
+                let root = root.to_path_buf();
+                tasks.push(Editor::open_path(root, path).map(Message::Editor));
+            }
+        }
+        Task::batch(tasks)
     }
 
     fn handle_corkboard_view_message(

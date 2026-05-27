@@ -34,7 +34,7 @@ Master plan for building letswrite, a Rust/Iced book-writing app. Phased so each
 - [x] **#18 P3.1** Character overview & editor — *blocked by #8*
 - [x] **#19 P3.2** Location overview & editor — *blocked by #18*
 - [x] **#20 P3.3** Scene cards / corkboard view — *blocked by #8*
-- [ ] **#21 P3.4** Plot/timeline view — *blocked by #20*
+- [x] **#21 P3.4** Plot/timeline view — *blocked by #20*
 - [ ] **#22 P3.5** Relationships graph — *blocked by #18, #19*
 - [ ] **#23 P3.6** Minimap of all characters (graphical) — *blocked by #16, #17*
 - [ ] **#24 P3.7** Research / worldbuilding notes — *blocked by #7*

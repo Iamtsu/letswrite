@@ -36,7 +36,7 @@ letswrite-import = { path = "crates/letswrite-import" }
 letswrite-ai = { path = "crates/letswrite-ai" }
 
 # UI
-iced = { version = "0.13", features = ["tokio", "advanced", "markdown"] }
+iced = { version = "0.13", features = ["tokio", "advanced", "markdown", "canvas"] }
 
 # Async
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "sync", "time"] }

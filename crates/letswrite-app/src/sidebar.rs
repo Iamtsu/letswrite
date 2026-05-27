@@ -63,6 +63,7 @@ pub(crate) enum Message {
     ShowCharacters,
     ShowLocations,
     ShowCorkboard,
+    ShowTimeline,
     /// Result of the file-picker future. Handled by the app shell, which
     /// opens the project and then fires [`Self::ProjectLoaded`] with the
     /// real scan back into us.
@@ -190,6 +191,10 @@ impl Sidebar {
             },
             Message::ShowCorkboard => SidebarReaction {
                 show_view: Some(crate::views::MainView::Corkboard),
+                ..Default::default()
+            },
+            Message::ShowTimeline => SidebarReaction {
+                show_view: Some(crate::views::MainView::Timeline),
                 ..Default::default()
             },
             Message::ProjectPicked(None) => SidebarReaction::default(),
@@ -392,6 +397,10 @@ impl Sidebar {
                     .width(Length::FillPortion(1)),
                 button(text("Scenes").size(11))
                     .on_press(Message::ShowCorkboard)
+                    .style(button::secondary)
+                    .width(Length::FillPortion(1)),
+                button(text("Timeline").size(11))
+                    .on_press(Message::ShowTimeline)
                     .style(button::secondary)
                     .width(Length::FillPortion(1)),
             ]
