@@ -35,9 +35,10 @@ fn main() -> iced::Result {
     let initial_size =
         Size::new(probe.window.width as f32, probe.window.height as f32);
 
-    iced::application(app::App::title, app::App::update, app::App::view)
+    iced::application(app::App::new, app::App::update, app::App::view)
+        .title(app::App::title)
         .theme(app::App::theme)
         .subscription(app::App::subscription)
         .window_size(initial_size)
-        .run_with(app::App::new)
+        .run()
 }

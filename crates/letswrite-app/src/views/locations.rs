@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use iced::widget::{button, column, container, horizontal_rule, row, scrollable, text, text_input};
+use iced::widget::{button, column, container, row, rule, scrollable, text, text_input};
 use iced::{Element, Length, Task};
 
 use letswrite_core::{Document, DocumentKind, Project};
@@ -301,7 +301,7 @@ fn form_view(form: &LocationForm) -> Element<'_, Message> {
         .spacing(2),
     );
 
-    col = col.push(horizontal_rule(1));
+    col = col.push(rule::horizontal(1.0));
     col = col.push(text("Notes").size(11));
     col = col.push(
         text_input("Free-form notes (saved to the body of the file)", &form.notes)
@@ -310,7 +310,7 @@ fn form_view(form: &LocationForm) -> Element<'_, Message> {
     );
 
     if !form.visitors.is_empty() {
-        col = col.push(horizontal_rule(1));
+        col = col.push(rule::horizontal(1.0));
         col = col.push(text("Visitors").size(11));
         for v in &form.visitors {
             col = col.push(

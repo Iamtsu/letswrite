@@ -15,7 +15,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use iced::widget::{button, column, container, horizontal_rule, row, scrollable, text, text_input};
+use iced::widget::{button, column, container, row, rule, scrollable, text, text_input};
 use iced::{Element, Length, Task};
 
 use letswrite_core::{Document, DocumentKind, Project};
@@ -334,7 +334,7 @@ fn form_view(form: &CharacterForm) -> Element<'_, Message> {
         .spacing(2),
     );
 
-    col = col.push(horizontal_rule(1));
+    col = col.push(rule::horizontal(1.0));
     col = col.push(text("Notes").size(11));
     col = col.push(
         text_input("Free-form notes (saved to the character file's body)", &form.notes)
@@ -343,7 +343,7 @@ fn form_view(form: &CharacterForm) -> Element<'_, Message> {
     );
 
     if !form.timeline.is_empty() {
-        col = col.push(horizontal_rule(1));
+        col = col.push(rule::horizontal(1.0));
         col = col.push(text("Timeline").size(11));
         for entry in &form.timeline {
             col = col.push(

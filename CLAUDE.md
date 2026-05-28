@@ -61,7 +61,7 @@ Markdown files on disk are the source of truth for prose. SQLite (at `.letswrite
 - `pane_grid::PaneGrid` for the three-column shell (sidebar | editor | assistant) with drag-resizable splitters. Split ratios persist to settings on resize.
 - Pane closures cannot borrow from `view()` locals — `pane_grid::Content<'a>` is invariant in `'a`. Resolve strings (e.g. via `i18n.tr`) into owned `String` *before* the closure and `.clone()` per pane.
 - Each pane container needs an explicit opaque background (`pane_surface_style`) — without it, the splitter-gap color bleeds across the whole window.
-- `iced::application(...)` is invoked from `main.rs` with `.window_size(...)` from settings, `.theme(App::theme)`, and `.run_with(App::new)`.
+- `iced::application(App::new, App::update, App::view)` is invoked from `main.rs` with `.title(App::title)`, `.theme(App::theme)`, `.subscription(...)`, `.window_size(...)`, and `.run()`. (iced 0.14 changed the boot signature: the first argument now returns initial state, and `title`/`theme`/etc. are builder methods rather than positional args.)
 
 ## Error handling
 

@@ -226,24 +226,21 @@ impl canvas::Program<Message> for TimelineView {
     fn update(
         &self,
         _state: &mut Self::State,
-        event: canvas::Event,
+        event: &canvas::Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
-    ) -> (canvas::event::Status, Option<Message>) {
+    ) -> Option<canvas::Action<Message>> {
         let canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event
         else {
-            return (canvas::event::Status::Ignored, None);
+            return None;
         };
-        let Some(pos) = cursor.position_in(bounds) else {
-            return (canvas::event::Status::Ignored, None);
-        };
+        let pos = cursor.position_in(bounds)?;
         if let Some(scene_id) = hit_test(pos, bounds.size(), &self.bars) {
-            return (
-                canvas::event::Status::Captured,
-                Some(Message::OpenScene(scene_id)),
+            return Some(
+                canvas::Action::publish(Message::OpenScene(scene_id)).and_capture(),
             );
         }
-        (canvas::event::Status::Ignored, None)
+        None
     }
 }
 

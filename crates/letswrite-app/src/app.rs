@@ -275,8 +275,8 @@ impl App {
             };
             pane_grid::Content::new(body)
         })
-        .on_resize(SPLITTER_GRAB_LEEWAY, Message::PaneResized)
-        .spacing(SPLITTER_THICKNESS)
+        .on_resize(f32::from(SPLITTER_GRAB_LEEWAY), Message::PaneResized)
+        .spacing(f32::from(SPLITTER_THICKNESS))
         .style(splitter_highlight_style);
 
         container(pane_grid)

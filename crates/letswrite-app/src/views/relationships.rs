@@ -261,29 +261,27 @@ impl canvas::Program<Message> for RelationshipsView {
     fn update(
         &self,
         _state: &mut Self::State,
-        event: canvas::Event,
+        event: &canvas::Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
-    ) -> (canvas::event::Status, Option<Message>) {
+    ) -> Option<canvas::Action<Message>> {
         let canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event
         else {
-            return (canvas::event::Status::Ignored, None);
+            return None;
         };
-        let Some(pos) = cursor.position_in(bounds) else {
-            return (canvas::event::Status::Ignored, None);
-        };
+        let pos = cursor.position_in(bounds)?;
         let centers = node_centers(&self.nodes, bounds.size());
         for (i, c) in centers.iter().enumerate() {
             let dx = pos.x - c.x;
             let dy = pos.y - c.y;
             if dx * dx + dy * dy <= NODE_RADIUS * NODE_RADIUS * 4.0 {
-                return (
-                    canvas::event::Status::Captured,
-                    Some(Message::NodeSelected(self.nodes[i].entity_id)),
+                return Some(
+                    canvas::Action::publish(Message::NodeSelected(self.nodes[i].entity_id))
+                        .and_capture(),
                 );
             }
         }
-        (canvas::event::Status::Ignored, None)
+        None
     }
 }
 

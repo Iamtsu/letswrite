@@ -15,16 +15,14 @@ use std::time::{Duration, Instant};
 // Status, the `default` style fn, …) and a free-fn constructor. We import
 // the module here and call the constructor as `text_editor::TextEditor::new`
 // via the local alias `editor_widget` below.
-use iced::widget::scrollable::{AbsoluteOffset, Id as ScrollId};
+use iced::widget::scrollable::AbsoluteOffset;
 use iced::widget::text_editor::{self, Action, Content, TextEditor};
-use iced::widget::{button, column, container, markdown, row, scrollable, text};
-use std::sync::OnceLock;
+use iced::widget::{self as widget, button, column, container, markdown, row, scrollable, text};
 
 /// Stable scroll-container id so `jump_to_offset` can address the outer
 /// scrollable from anywhere in the editor module.
-fn editor_scroll_id() -> ScrollId {
-    static ID: OnceLock<ScrollId> = OnceLock::new();
-    ID.get_or_init(|| ScrollId::new("letswrite-editor-scroll")).clone()
+const fn editor_scroll_id() -> widget::Id {
+    widget::Id::new("letswrite-editor-scroll")
 }
 use iced::{Border, Element, Font, Length, Task, Theme};
 
@@ -135,7 +133,7 @@ pub(crate) enum Message {
     /// User switched between edit / preview / split.
     SetViewMode(ViewMode),
     /// User clicked a link in the rendered preview.
-    LinkClicked(markdown::Url),
+    LinkClicked(markdown::Uri),
 }
 
 #[derive(Debug, Clone)]
@@ -206,7 +204,7 @@ impl Editor {
         #[allow(clippy::cast_precision_loss, clippy::suboptimal_flops)]
         let y = ((line as f32) * line_height - line_height * 3.0).max(0.0);
         tracing::debug!(line, column, y, "scrolling editor to jump target");
-        scrollable::scroll_to(editor_scroll_id(), AbsoluteOffset { x: 0.0, y })
+        widget::operation::scroll_to(editor_scroll_id(), AbsoluteOffset { x: 0.0, y })
     }
 
     pub(crate) const fn set_syntax_theme(&mut self, theme: SyntaxTheme) {
@@ -249,7 +247,9 @@ impl Editor {
         let Some(open) = &self.open else {
             return EditorSnapshot::default();
         };
-        let (line, column) = open.content.cursor_position();
+        let cursor = open.content.cursor();
+        let line = cursor.position.line;
+        let column = cursor.position.column;
         let selection = open.content.selection();
         let body = open.content.text();
         EditorSnapshot {
@@ -427,7 +427,7 @@ impl Editor {
             .height(Length::Shrink)
             .padding(16)
             .font(Font::DEFAULT)
-            .size(self.font_size)
+            .size(f32::from(self.font_size))
             .on_action(Message::Action)
             .highlight_with::<MarkdownHighlighter>(
                 syntax::Settings { theme: self.syntax_theme },
@@ -442,12 +442,9 @@ impl Editor {
     }
 
     fn preview_view<'a>(&self, open: &'a OpenDocument) -> Element<'a, Message> {
-        let settings = markdown::Settings::with_text_size(self.font_size);
-        // Style is theme-derived; we don't have direct access to the active
-        // iced::Theme here, so use the dark palette which matches our
-        // default. A future settings panel could pipe the live theme in.
         let style = markdown::Style::from_palette(Theme::Dark.palette());
-        let view = markdown::view(&open.preview_items, settings, style)
+        let settings = markdown::Settings::with_text_size(f32::from(self.font_size), style);
+        let view = markdown::view(&open.preview_items, settings)
             .map(Message::LinkClicked);
         scrollable(container(view).padding(16).width(Length::Fill))
             .height(Length::Fill)

@@ -94,7 +94,7 @@ pub(crate) enum Message {
     /// User submitted the API key.
     ApiKeySubmit,
     /// User clicked a link in the rendered markdown reply.
-    LinkClicked(markdown::Url),
+    LinkClicked(markdown::Uri),
 }
 
 /// `AgentEvent` isn't `Clone`-friendly across `iced::Subscription` boundaries
@@ -626,8 +626,10 @@ fn render_turn(turn: &Turn) -> Element<'_, Message> {
         reply.push(
             markdown::view(
                 &turn.reply_items,
-                markdown::Settings::with_text_size(13),
-                markdown::Style::from_palette(Theme::Dark.palette()),
+                markdown::Settings::with_text_size(
+                    13.0,
+                    markdown::Style::from_palette(Theme::Dark.palette()),
+                ),
             )
             .map(Message::LinkClicked),
         );
@@ -679,7 +681,7 @@ fn stream_from_agent(
     context: AssistantContext,
     cancel: CancellationToken,
 ) -> impl Stream<Item = AgentEvent> {
-    iced::stream::channel(64, move |mut tx| async move {
+    iced::stream::channel(64, async move |mut tx: iced::futures::channel::mpsc::Sender<AgentEvent>| {
         let mut s = agent.ask(input, context, cancel).await;
         while let Some(ev) = s.next().await {
             if tx.send(ev).await.is_err() {

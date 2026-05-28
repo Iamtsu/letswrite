@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, horizontal_rule, row, scrollable, text};
+use iced::widget::{button, column, container, row, rule, scrollable, text};
 use iced::{Element, Length};
 
 use letswrite_core::{Document, Project};
@@ -156,7 +156,7 @@ impl CorkboardView {
         for card in &self.cards {
             if Some(card.document_id) != current_doc {
                 if current_doc.is_some() {
-                    col = col.push(horizontal_rule(1));
+                    col = col.push(rule::horizontal(1.0));
                 }
                 col = col.push(text(card.document_title.clone()).size(14));
                 current_doc = Some(card.document_id);

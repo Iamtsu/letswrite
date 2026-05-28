@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use iced::widget::{
-    button, column, container, horizontal_rule, row, scrollable, text, text_input, tooltip,
+    button, column, container, row, rule, scrollable, text, text_input, tooltip,
 };
 use iced::widget::tooltip::Position as TooltipPosition;
 use iced::{Element, Length, Task};
@@ -405,7 +405,7 @@ impl Sidebar {
                 view_icon("\u{273A}", "Research", Message::ShowResearch),
             ]
             .spacing(4),
-            horizontal_rule(1),
+            rule::horizontal(1.0),
         ]
         .spacing(8)
         .padding(12)
@@ -413,7 +413,7 @@ impl Sidebar {
 
         if let Some(dialog) = &self.dialog {
             col = col.push(dialog_view(dialog));
-            col = col.push(horizontal_rule(1));
+            col = col.push(rule::horizontal(1.0));
         }
 
         if self.project_root.is_some() {
