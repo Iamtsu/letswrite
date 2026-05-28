@@ -374,6 +374,12 @@ impl Editor {
         }
     }
 
+    /// Current document body text, if a document is open. Used by the
+    /// sidebar's Search panel to compute matches against fresh prose.
+    pub(crate) fn body(&self) -> Option<String> {
+        self.open.as_ref().map(|o| o.content.text())
+    }
+
     // Single dispatch match over editor messages; splitting it for the
     // lint's sake hurts readability.
     #[allow(clippy::too_many_lines)]

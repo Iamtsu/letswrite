@@ -2293,6 +2293,7 @@ dependencies = [
  "letswrite-ai",
  "letswrite-core",
  "letswrite-import",
+ "regex",
  "rfd",
  "rusqlite",
  "serde_json",

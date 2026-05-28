@@ -10,6 +10,7 @@ mod context_builder;
 mod editor;
 mod minimap;
 mod presets;
+mod search;
 mod sidebar;
 mod syntax;
 mod views;

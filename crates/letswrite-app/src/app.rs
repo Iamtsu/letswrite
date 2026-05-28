@@ -24,6 +24,7 @@ use letswrite_import::import_project;
 use crate::assistant::{self, Assistant};
 use crate::context_builder::{self, BuildInputs};
 use crate::editor::{self, Editor};
+use crate::search;
 use crate::sidebar::{self, Sidebar};
 use crate::syntax::SyntaxTheme;
 use crate::views::characters::{self as characters_view, CharactersView};
@@ -88,6 +89,12 @@ pub(crate) enum Message {
     /// Mouse wheel scrolled by `delta` lines (positive = up). Only acted on
     /// when Ctrl is held in [`Self::ModifiersChanged`].
     WheelScrolled(f32),
+    /// Ctrl-F / Ctrl-H pressed — open the sidebar's Search tab in the
+    /// requested mode.
+    OpenSearchPanel(search::Mode),
+    /// Esc pressed while the Search tab is active — fall back to the
+    /// Project tab so the file tree is visible again.
+    CloseSearchPanel,
 }
 
 impl App {
@@ -233,17 +240,45 @@ impl App {
                 }
                 Task::none()
             }
+            Message::OpenSearchPanel(mode) => {
+                // Switch the sidebar to the Search tab and prime its
+                // mode. The text_input inside the Search panel is what
+                // we want focused, but iced 0.14's text_input lacks a
+                // stable `focus(id)` helper that works through Element
+                // mapping — focusing the input is best-effort and may
+                // require a click in the field. We can revisit if it
+                // proves annoying.
+                self.sidebar.set_tab(sidebar::Tab::Search);
+                self.sidebar.set_search_mode(mode);
+                Task::none()
+            }
+            Message::CloseSearchPanel => {
+                // Only swap back if we're actually showing Search;
+                // otherwise Esc would still surface as a no-op message
+                // but shouldn't change the user's place.
+                if self.sidebar.tab() == sidebar::Tab::Search {
+                    self.sidebar.set_tab(sidebar::Tab::Project);
+                }
+                Task::none()
+            }
         }
     }
 
     pub(crate) fn view(&self) -> Element<'_, Message> {
         let pane_grid = PaneGrid::new(&self.panes, |_id, pane, _is_maximized| {
             let body: Element<'_, Message> = match pane {
-                Pane::Sidebar => container(self.sidebar.view().map(Message::Sidebar))
+                Pane::Sidebar => {
+                    let editor_body = self.editor.body();
+                    container(
+                        self.sidebar
+                            .view(editor_body.as_deref())
+                            .map(Message::Sidebar),
+                    )
                     .width(Length::Fill)
                     .height(Length::Fill)
                     .style(pane_surface_style)
-                    .into(),
+                    .into()
+                }
                 Pane::Editor => {
                     let body: Element<'_, Message> = match self.main_view {
                         MainView::Editor => self.editor.view().map(Message::Editor),
@@ -294,8 +329,34 @@ impl App {
     }
 
     fn handle_sidebar_message(&mut self, msg: sidebar::Message) -> Task<Message> {
-        let reaction = self.sidebar.update(msg);
+        let editor_body = self.editor.body();
+        let reaction = self.sidebar.update(msg, editor_body.as_deref());
         let mut tasks: Vec<Task<Message>> = Vec::new();
+        // Splices must apply before the jump — the jump's offsets are
+        // computed against the post-splice buffer (e.g. "advance to the
+        // next match" after a single Replace). The sidebar already
+        // orders splices highest-offset-first so applying them in
+        // sequence doesn't disturb earlier offsets.
+        for (range, expected, replacement) in reaction.editor_splices {
+            tasks.push(
+                self.editor
+                    .splice_at(range.start, range.end, &expected, replacement)
+                    .map(Message::Editor),
+            );
+        }
+        if let Some(span) = reaction.editor_jump {
+            // Sidebar-driven jumps come from an explicit navigation —
+            // Enter / Next / Prev / Replace — so focusing the editor is
+            // the right behaviour: the user is asking to go to the
+            // match and the yellow selection only paints when focused
+            // (text_editor.rs:1021). The QueryChanged keystroke path
+            // never emits a jump, so live typing stays in the input.
+            tasks.push(
+                self.editor
+                    .jump_to_range(span.start, span.end)
+                    .map(Message::Editor),
+            );
+        }
         if let Some(view) = reaction.show_view {
             self.main_view = view;
             if let Some(p) = self.project.as_ref() {
@@ -928,9 +989,25 @@ fn global_event_filter(
     _status: event::Status,
     _window: iced::window::Id,
 ) -> Option<Message> {
+    use keyboard::key::{Key, Named};
     match event {
         Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
             Some(Message::ModifiersChanged(m))
+        }
+        Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            // Only intercept the global search shortcuts here; everything
+            // else (typing into a focused input, navigation in lists)
+            // continues to flow to whichever widget has focus.
+            match key {
+                Key::Character(c) if modifiers.control() && c.eq_ignore_ascii_case("f") => {
+                    Some(Message::OpenSearchPanel(search::Mode::Find))
+                }
+                Key::Character(c) if modifiers.control() && c.eq_ignore_ascii_case("h") => {
+                    Some(Message::OpenSearchPanel(search::Mode::Replace))
+                }
+                Key::Named(Named::Escape) => Some(Message::CloseSearchPanel),
+                _ => None,
+            }
         }
         Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
             // Iced gives us either Lines{x, y} or Pixels{x, y}; we only care

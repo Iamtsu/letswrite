@@ -87,6 +87,7 @@ keyring = { version = "3", features = [
 
 # Text utilities
 unicode-segmentation = "1"
+regex = "1"
 
 # i18n
 fluent = "0.16"
