@@ -98,9 +98,12 @@ struct WikiLink {
     end_offset: usize,
 }
 
-/// Find every `[[Target]]` or `[[Target|Display]]` in `body`. Mid-edit
-/// unclosed `[[`s are skipped (no closing `]]`), matching the editor's
-/// scanner.
+/// Find every `[[Target]]`, `[[Target|Display]]`, or `[[Target: Display]]`
+/// in `body`. Mid-edit unclosed `[[`s are skipped (no closing `]]`),
+/// matching the editor's scanner. The `": "` (colon + space) variant is
+/// emitted by the Confirm-from-suggestion flow; a bare colon without a
+/// trailing space is part of the target (so `"Chapter 1: Intro"` works as
+/// a title-style link target).
 fn find_wiki_links(body: &str) -> Vec<WikiLink> {
     let bytes = body.as_bytes();
     let n = bytes.len();
@@ -110,7 +113,13 @@ fn find_wiki_links(body: &str) -> Vec<WikiLink> {
         if bytes[i] == b'[' && bytes[i + 1] == b'[' {
             if let Some(close) = find_double_close(body, i + 2) {
                 let inner = &body[i + 2..close];
-                let target = inner.split_once('|').map_or(inner, |(t, _)| t);
+                let target = if let Some((t, _)) = inner.split_once('|') {
+                    t.trim()
+                } else if let Some((t, _)) = inner.split_once(": ") {
+                    t.trim()
+                } else {
+                    inner
+                };
                 out.push(WikiLink {
                     target: target.to_owned(),
                     start_offset: i,
@@ -156,6 +165,25 @@ mod tests {
         let hits = find_wiki_links(body);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].target, "Evan Calder");
+    }
+
+    #[test]
+    fn colon_space_alias_target_extracted() {
+        // Confirm-from-suggestion writes `[[Entity: matched]]`. The
+        // mention resolver must pick the entity name, not the alias.
+        let body = "see [[Evan Calder: Evan]] in the hall.";
+        let hits = find_wiki_links(body);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].target, "Evan Calder");
+    }
+
+    #[test]
+    fn bare_colon_target_is_kept_whole() {
+        // No trailing space → not an alias separator.
+        let body = "see [[Chapter:Intro]] today.";
+        let hits = find_wiki_links(body);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].target, "Chapter:Intro");
     }
 
     #[test]

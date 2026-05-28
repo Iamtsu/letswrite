@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use letswrite_core::{Document, Project, Result};
 
@@ -45,6 +45,7 @@ pub fn detect_for_document(project: &mut Project, abs_path: &Path) -> Result<usi
 
     let entities = load_entities(conn, project_id)?;
     let explicit_spans = collect_explicit_spans(&doc.body);
+    let rejected = load_rejected(conn, document_id)?;
     let detections = scan(&doc.body, &entities, &explicit_spans);
 
     let tx = conn.transaction()?;
@@ -58,6 +59,12 @@ pub fn detect_for_document(project: &mut Project, abs_path: &Path) -> Result<usi
 
     let mut count = 0;
     for d in &detections {
+        // Skip mentions the user has explicitly rejected for this
+        // document. Comparison is case-insensitive on the matched text
+        // so a single reject of "Mara" covers later "mara"s too.
+        if rejected.contains(&(d.entity_id, d.matched_text.to_ascii_lowercase())) {
+            continue;
+        }
         // SQLite stores byte offsets; usize → i64 is safe at any realistic
         // document size.
         #[allow(clippy::cast_possible_wrap)]
@@ -66,14 +73,37 @@ pub fn detect_for_document(project: &mut Project, abs_path: &Path) -> Result<usi
         let end = d.end_offset as i64;
         tx.execute(
             "INSERT INTO entity_mentions
-                (document_id, entity_id, start_offset, end_offset, source, confidence)
-             VALUES (?1, ?2, ?3, ?4, 'name_match', 0.5)",
-            params![document_id, d.entity_id, start, end],
+                (document_id, entity_id, start_offset, end_offset,
+                 source, confidence, matched_text)
+             VALUES (?1, ?2, ?3, ?4, 'name_match', 0.5, ?5)",
+            params![document_id, d.entity_id, start, end, d.matched_text],
         )?;
         count += 1;
     }
     tx.commit()?;
     Ok(count)
+}
+
+/// Load the per-document rejection deny-list as a set keyed by
+/// `(entity_id, lowercased matched_text)`. Linear scan during detection
+/// is fine — typical reject counts are in the dozens, not thousands.
+fn load_rejected(
+    conn: &rusqlite::Connection,
+    document_id: i64,
+) -> Result<std::collections::HashSet<(i64, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT entity_id, matched_text_lower
+           FROM rejected_mentions
+          WHERE document_id = ?1",
+    )?;
+    let rows = stmt.query_map(params![document_id], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut out = std::collections::HashSet::new();
+    for row in rows {
+        out.insert(row?);
+    }
+    Ok(out)
 }
 
 /// Entity lookup forms sorted longest-first so multi-word names match
@@ -210,28 +240,126 @@ fn is_word_boundary_after(body: &str, pos: usize) -> bool {
         .is_none_or(|b| !b.is_ascii_alphanumeric() && *b != b'_')
 }
 
-/// Promote a pending `name_match` to `user_confirmed`. Returns the number
-/// of rows updated (0 if the mention has already been removed).
+/// What the app needs to do in the editor after `confirm` succeeds:
+/// splice an explicit wiki-link into the prose so the mention becomes a
+/// permanent reference rather than a heuristic guess.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfirmAction {
+    /// Document the mention belongs to, relative to project root.
+    pub rel_path: String,
+    /// Byte offsets of the original matched span, as stored in `SQLite` at
+    /// detection time. The app should splice over `start_offset..end_offset`
+    /// of the in-memory buffer. Offsets can drift if the document was
+    /// edited since the last save; callers should handle a small miss
+    /// gracefully (re-detect after the splice will re-anchor everything).
+    pub start_offset: usize,
+    pub end_offset: usize,
+    /// The exact text that was at `start_offset..end_offset` at detection
+    /// time. The caller should verify the current buffer still contains
+    /// this string at the offsets before splicing — otherwise an earlier
+    /// confirm in a back-to-back sequence has shifted everything and we
+    /// must refuse rather than overwrite the wrong span.
+    pub expected: String,
+    /// The text to insert in place of the original span: an explicit
+    /// wiki-link with the entity as target and the original matched
+    /// text preserved as the display alias, e.g. `[[Evan Calder: Evan]]`.
+    pub replacement: String,
+}
+
+/// Confirm a pending `name_match`: delete the suggestion row (the
+/// follow-up edit + autosave will produce a fresh `explicit_tag` mention)
+/// and return the instructions the app needs to rewrite the prose.
 pub fn confirm(
     project: &mut Project,
     mention_id: i64,
-) -> Result<usize> {
-    let n = project.database().conn().execute(
-        "UPDATE entity_mentions
-            SET source = 'user_confirmed', confidence = 1.0
-          WHERE id = ?1 AND source = 'name_match'",
+) -> Result<Option<ConfirmAction>> {
+    let conn = project.database().conn();
+    let row: Option<(String, i64, i64, String, String)> = conn
+        .query_row(
+            "SELECT d.rel_path, em.start_offset, em.end_offset,
+                    em.matched_text, e.name
+               FROM entity_mentions em
+               JOIN documents d ON d.id = em.document_id
+               JOIN entities  e ON e.id = em.entity_id
+              WHERE em.id = ?1 AND em.source = 'name_match'",
+            params![mention_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((rel_path, start, end, matched, entity_name)) = row else {
+        return Ok(None);
+    };
+    // Delete the name_match row up front; after the app rewrites the
+    // prose and autosave fires, the next detection pass will see the
+    // span inside an `[[…]]` and skip it via `collect_explicit_spans`.
+    conn.execute(
+        "DELETE FROM entity_mentions WHERE id = ?1 AND source = 'name_match'",
         params![mention_id],
     )?;
-    Ok(n)
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let start_usize = start.max(0) as usize;
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    let end_usize = end.max(0) as usize;
+    // If the prose already used the entity's canonical name, skip the
+    // alias suffix: "[[Luis Moreno]]" reads cleaner than the redundant
+    // "[[Luis Moreno: Luis Moreno]]". Case-insensitive so "luis moreno"
+    // in lowercase prose still collapses.
+    let replacement = if matched.eq_ignore_ascii_case(&entity_name) {
+        format!("[[{entity_name}]]")
+    } else {
+        format!("[[{entity_name}: {matched}]]")
+    };
+    Ok(Some(ConfirmAction {
+        rel_path,
+        start_offset: start_usize,
+        end_offset: end_usize,
+        expected: matched,
+        replacement,
+    }))
 }
 
-/// Reject and delete a pending `name_match`.
+/// Reject a pending `name_match`: drop the suggestion row and remember it.
+///
+/// The rejection is recorded in `rejected_mentions` so the detector
+/// skips this name on subsequent scans of the same document. Keyed on
+/// the lowercased matched text so a reject of "Mara" also covers later
+/// "mara"s.
 pub fn reject(project: &mut Project, mention_id: i64) -> Result<usize> {
-    let n = project.database().conn().execute(
-        "DELETE FROM entity_mentions
-          WHERE id = ?1 AND source = 'name_match'",
+    let conn = project.database_mut().conn_mut();
+    let row: Option<(i64, i64, String)> = conn
+        .query_row(
+            "SELECT em.document_id, em.entity_id, em.matched_text
+               FROM entity_mentions em
+              WHERE em.id = ?1 AND em.source = 'name_match'",
+            params![mention_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let Some((document_id, entity_id, matched)) = row else {
+        return Ok(0);
+    };
+    let tx = conn.transaction()?;
+    // `INSERT OR IGNORE`: rejecting the same name twice (e.g. a stale
+    // duplicate) should be a no-op rather than a UNIQUE-constraint error.
+    tx.execute(
+        "INSERT OR IGNORE INTO rejected_mentions
+             (document_id, entity_id, matched_text_lower)
+         VALUES (?1, ?2, ?3)",
+        params![document_id, entity_id, matched.to_ascii_lowercase()],
+    )?;
+    let n = tx.execute(
+        "DELETE FROM entity_mentions WHERE id = ?1 AND source = 'name_match'",
         params![mention_id],
     )?;
+    tx.commit()?;
     Ok(n)
 }
 

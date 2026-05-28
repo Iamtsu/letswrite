@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 // via the local alias `editor_widget` below.
 use iced::widget::text_editor::{self, Action, Content, Cursor, Position, TextEditor};
 use iced::widget::{self as widget, button, column, container, markdown, row, scrollable, text};
-use iced::{Border, Element, Font, Length, Task, Theme};
+use iced::{Border, Color, Element, Font, Length, Task, Theme};
 
 /// Stable id for the editor widget so we can `focus(...)` it after a
 /// programmatic cursor jump — without focus, the caret isn't painted.
@@ -113,10 +113,15 @@ pub(crate) struct Editor {
     syntax_theme: SyntaxTheme,
     font_size: u16,
     view_mode: ViewMode,
-    /// Byte offset the cursor should land on after the next document
-    /// load completes. Set by `jump_to_offset` when no document is open
-    /// yet; applied in `Message::Loaded(Ok)` and cleared.
-    pending_jump_offset: Option<usize>,
+    /// Byte span the cursor should land on (selecting `start..end`) after
+    /// the next document load completes. Set by `jump_to_range` when no
+    /// document is open yet; applied in `Message::Loaded(Ok)` and cleared.
+    pending_jump_range: Option<(usize, usize)>,
+    /// When `true`, the current selection comes from a Suggestions jump
+    /// and should render in [`JUMP_HIGHLIGHT`] yellow instead of the
+    /// theme's default selection colour. Cleared by the first user
+    /// action so a manually-made selection looks normal.
+    jump_highlight_active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +139,11 @@ pub(crate) enum Message {
     /// User clicked a link in the rendered preview.
     LinkClicked(markdown::Uri),
 }
+
+/// Selection colour used during a Suggestions jump. The default theme
+/// selection blends into the syntax-highlighted prose and is easy to miss
+/// at a glance; bright yellow stays unambiguous against any background.
+const JUMP_HIGHLIGHT: Color = Color::from_rgba(1.0, 0.85, 0.2, 0.55);
 
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedFile {
@@ -154,49 +164,158 @@ impl Editor {
             syntax_theme,
             font_size,
             view_mode: ViewMode::Edit,
-            pending_jump_offset: None,
+            pending_jump_range: None,
+            jump_highlight_active: false,
         }
     }
 
-    /// Jump the cursor to `offset` (byte position in the body) of the
-    /// currently-open document AND scroll the surrounding scrollable so
-    /// the cursor's line is visible. If no document is open yet, the
-    /// offset is stashed and applied after the next `Message::Loaded(Ok)`.
-    pub(crate) fn jump_to_offset(&mut self, offset: usize) -> Task<Message> {
+    /// Jump to `start..end` in the currently-open document: select the
+    /// matched span (so it's visible at a glance, not just a thin caret),
+    /// focus the editor, and re-center the line in the viewport. If no
+    /// document is open yet, the range is stashed and applied after the
+    /// next `Message::Loaded(Ok)`.
+    pub(crate) fn jump_to_range(&mut self, start: usize, end: usize) -> Task<Message> {
         if self.open.is_some() {
-            self.apply_jump(offset)
+            self.apply_jump(start, end)
         } else {
-            // No doc yet — stash for after the next Loaded(Ok).
-            self.pending_jump_offset = Some(offset);
+            self.pending_jump_range = Some((start, end));
             Task::none()
         }
     }
 
-    /// Move the cursor of the open buffer to `offset` and let cosmic-text
-    /// auto-scroll the wrapped layout to keep it visible.
+    /// Land the cursor on `start..end` and focus the editor.
     ///
-    /// Three things have to happen for the user to *see* the jump land:
-    /// 1. `Content::move_to` flips cosmic-text's `cursor_moved`, so the
-    ///    next layout pass calls `shape_until_cursor` and scrolls the
-    ///    wrapped buffer to bring the cursor's visual row into view.
-    /// 2. `Position::column` is a byte index into the logical line —
-    ///    same unit `offset_to_line_column` returns, so no conversion.
-    /// 3. The caret only paints when the editor is focused, so after
-    ///    moving we dispatch a `focus(editor_id)` task. Without this,
-    ///    a click on a Suggestions button leaves focus on the button,
-    ///    and the cursor is invisible at the (correctly scrolled) target.
-    fn apply_jump(&mut self, offset: usize) -> Task<Message> {
+    /// `Content::move_to(Cursor { position, selection })` selects the
+    /// matched span — the yellow selection highlight (see
+    /// `JUMP_HIGHLIGHT`) is what makes the target findable on screen,
+    /// not the 1-px caret. `move_to` also flips cosmic-text's
+    /// `cursor_moved`, so the next layout pass scrolls the wrapped
+    /// buffer to expose the selection. Wrap metrics included.
+    ///
+    /// The caret only paints when the editor is focused
+    /// (`text_editor.rs:1021`), so a button-click jump leaves focus on
+    /// the button — we dispatch `focus(editor_id)` to bring it back.
+    ///
+    /// We deliberately do not try to centre the line in the viewport.
+    /// cosmic-text's "minimum scroll to expose" lands the target near an
+    /// edge, and every recentre scheme we tried (timed follow-up scroll,
+    /// pre-positioning trick) either fought `shape_until_cursor` or
+    /// drifted on repeat clicks. The yellow selection is loud enough
+    /// that edge-placement is fine.
+    fn apply_jump(&mut self, start: usize, end: usize) -> Task<Message> {
         let Some(open) = self.open.as_mut() else {
             return Task::none();
         };
         let body = open.content.text();
-        let (line, column) = offset_to_line_column(&body, offset);
-        tracing::debug!(line, column, "moving cursor to jump target");
+        let (start_line, start_col) = offset_to_line_column(&body, start);
+        let (end_line, end_col) = offset_to_line_column(&body, end);
+        tracing::debug!(
+            start_line,
+            start_col,
+            end_line,
+            end_col,
+            "selecting jump target"
+        );
         open.content.move_to(Cursor {
-            position: Position { line, column },
-            selection: None,
+            position: Position { line: end_line, column: end_col },
+            selection: Some(Position { line: start_line, column: start_col }),
         });
+        self.jump_highlight_active = true;
         widget::operation::focus(editor_id())
+    }
+
+    /// Build a `Document` from the open buffer and write it to disk on a
+    /// blocking thread. Shared by `AutosaveTick` and `splice_at` (which
+    /// can't wait for the autosave debounce — speed-clicking Confirm
+    /// would race two splices on top of stale offsets and panic
+    /// cosmic-text when the second offset lands inside a multibyte char).
+    fn save_now(open: &mut OpenDocument) -> Task<Message> {
+        let doc = Document {
+            rel_path: open.rel_path.clone(),
+            kind: open.kind,
+            title: derive_title(&open.frontmatter, &open.rel_path),
+            frontmatter: open.frontmatter.clone(),
+            body: open.content.text(),
+        };
+        let project_root = open.project_root.clone();
+        open.last_edit = None;
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || doc.save(&project_root))
+                    .await
+                    .map_err(|e| format!("join error: {e}"))
+                    .and_then(|res| res.map_err(|e| e.to_string()))
+            },
+            Message::Saved,
+        )
+    }
+
+    /// Replace the buffer's `start..end` byte range with `replacement`.
+    /// Used by the Suggestions Confirm flow to splice a `[[Entity: word]]`
+    /// wiki-link over the original prose. The buffer is marked dirty so
+    /// the autosave probe fires and persists the change.
+    ///
+    /// Implementation: select the span via `Content::move_to`, then
+    /// `Action::Edit(Edit::Paste(...))` replaces the selection in one
+    /// pass — cleaner than computing motions and avoids the multi-step
+    /// flicker of select-then-delete-then-insert.
+    pub(crate) fn splice_at(
+        &mut self,
+        start: usize,
+        end: usize,
+        expected: &str,
+        replacement: String,
+    ) -> Task<Message> {
+        use std::sync::Arc;
+        use iced::widget::text_editor::Edit;
+        let Some(open) = self.open.as_mut() else {
+            return Task::none();
+        };
+        let body = open.content.text();
+        // Three guards, all needed to avoid cosmic-text panicking on a
+        // stale offset:
+        // 1. In-bounds (`end <= len`) — past-end slicing returns None,
+        //    but cosmic-text will still index into the buffer.
+        // 2. `start <= end` — a corrupt row could invert these.
+        // 3. The slice equals what the suggestion was made against.
+        //    Confirming back-to-back in the same autosave window means
+        //    the first splice shifts every subsequent row's offsets; we
+        //    refuse the splice instead of writing the link into the
+        //    middle of a multibyte char (which panics in cosmic-text
+        //    when it tries to `String::split_at` a non-boundary byte).
+        let drift_safe = end <= body.len()
+            && start <= end
+            && body.is_char_boundary(start)
+            && body.is_char_boundary(end)
+            && &body[start..end] == expected;
+        if !drift_safe {
+            tracing::warn!(
+                start,
+                end,
+                len = body.len(),
+                expected,
+                "splice_at refused — offsets stale or non-UTF-8-boundary; \
+                 re-detect should re-anchor after autosave"
+            );
+            return Task::none();
+        }
+        let (start_line, start_col) = offset_to_line_column(&body, start);
+        let (end_line, end_col) = offset_to_line_column(&body, end);
+        open.content.move_to(Cursor {
+            position: Position { line: end_line, column: end_col },
+            selection: Some(Position { line: start_line, column: start_col }),
+        });
+        open.content.perform(Action::Edit(Edit::Paste(Arc::new(replacement))));
+        open.is_dirty = true;
+        // The splice replaced whatever the jump had selected, so the
+        // yellow highlight no longer points at anything meaningful.
+        self.jump_highlight_active = false;
+        refresh_preview(open);
+        // Save immediately — see `save_now` for why we bypass the
+        // debounce here. The follow-up `Message::Saved(Ok)` triggers
+        // `run_mention_detection` in the app shell, which re-anchors
+        // every remaining suggestion's offsets against the spliced body.
+        Self::save_now(open)
     }
 
     pub(crate) const fn set_syntax_theme(&mut self, theme: SyntaxTheme) {
@@ -265,6 +384,12 @@ impl Editor {
                     return Task::none();
                 };
                 let is_edit = action.is_edit();
+                // Any user-driven action — typing, clicking, scrolling,
+                // moving the caret — replaces the jump selection (or at
+                // least the user's attention has moved on). Drop the
+                // yellow highlight so a manual select-and-copy looks
+                // like a regular selection.
+                self.jump_highlight_active = false;
                 open.content.perform(action);
                 if is_edit {
                     open.last_edit = Some(Instant::now());
@@ -309,8 +434,8 @@ impl Editor {
                     "document loaded"
                 );
                 self.open = Some(open);
-                if let Some(offset) = self.pending_jump_offset.take() {
-                    return self.apply_jump(offset);
+                if let Some((start, end)) = self.pending_jump_range.take() {
+                    return self.apply_jump(start, end);
                 }
                 Task::none()
             }
@@ -330,26 +455,7 @@ impl Editor {
                 if last.elapsed() < AUTOSAVE_IDLE {
                     return Task::none();
                 }
-                // Build a Document from the current buffer + the held-aside
-                // frontmatter, then write off-thread so we don't block UI.
-                let doc = Document {
-                    rel_path: open.rel_path.clone(),
-                    kind: open.kind,
-                    title: derive_title(&open.frontmatter, &open.rel_path),
-                    frontmatter: open.frontmatter.clone(),
-                    body: open.content.text(),
-                };
-                let project_root = open.project_root.clone();
-                open.last_edit = None; // claim this save attempt
-                Task::perform(
-                    async move {
-                        tokio::task::spawn_blocking(move || doc.save(&project_root))
-                            .await
-                            .map_err(|e| format!("join error: {e}"))
-                            .and_then(|res| res.map_err(|e| e.to_string()))
-                    },
-                    Message::Saved,
-                )
+                Self::save_now(open)
             }
             Message::Saved(Ok(())) => {
                 if let Some(open) = self.open.as_mut() {
@@ -410,6 +516,7 @@ impl Editor {
         // visual row into view automatically. Wrapping the editor in an
         // outer `scrollable` would defeat this: the editor would expand
         // to full content height and never scroll itself.
+        let jump_highlight = self.jump_highlight_active;
         TextEditor::new(&open.content)
             .id(editor_id())
             .placeholder("Start writing…")
@@ -422,7 +529,9 @@ impl Editor {
                 syntax::Settings { theme: self.syntax_theme },
                 format_highlight,
             )
-            .style(editor_borderless_style)
+            .style(move |theme, status| {
+                editor_borderless_style(theme, status, jump_highlight)
+            })
             .into()
     }
 
@@ -516,12 +625,18 @@ fn format_highlight(
 /// Borderless variant of the default `text_editor` style. Removes the
 /// rectangular outline so the editor blends with the pane background and
 /// matches the look of the rendered preview (which has no border either).
-/// All other style properties — background, value/selection color, focus
-/// tint — come from the default.
-fn editor_borderless_style(theme: &Theme, status: text_editor::Status) -> text_editor::Style {
+/// When `jump_highlight` is true, the selection colour is overridden to
+/// [`JUMP_HIGHLIGHT`] so a Suggestions jump's selection stands out from
+/// the syntax-highlighted prose.
+fn editor_borderless_style(
+    theme: &Theme,
+    status: text_editor::Status,
+    jump_highlight: bool,
+) -> text_editor::Style {
     let base = text_editor::default(theme, status);
     text_editor::Style {
         border: Border { width: 0.0, ..base.border },
+        selection: if jump_highlight { JUMP_HIGHLIGHT } else { base.selection },
         ..base
     }
 }
@@ -565,10 +680,21 @@ fn rewrite_wiki_links(src: &str) -> String {
         if i + 1 < n && bytes[i] == b'[' && bytes[i + 1] == b'[' {
             if let Some(close) = find_wiki_close(src, i + 2) {
                 let name = &src[i + 2..close];
-                // Allow piped `[[Target|Display]]` (Obsidian convention).
-                let (target, display) = name
-                    .split_once('|')
-                    .map_or((name, name), |(t, d)| (t.trim(), d.trim()));
+                // Two alias separators are accepted:
+                //   `[[Target|Display]]` — Obsidian convention.
+                //   `[[Target: Display]]` — emitted by the Confirm-from-
+                //   suggestion flow, which writes the canonical entity
+                //   name as the target and keeps the writer's original
+                //   word as the display text. We require `": "` (colon +
+                //   space) so chapter titles like `"Chapter 1: Quiet
+                //   Week"` written inside a wiki-link are unaffected.
+                let (target, display) = if let Some((t, d)) = name.split_once('|') {
+                    (t.trim(), d.trim())
+                } else if let Some((t, d)) = name.split_once(": ") {
+                    (t.trim(), d.trim())
+                } else {
+                    (name, name)
+                };
                 let encoded_target = url_encode_path_segment(target);
                 out.push('[');
                 out.push_str(display);
@@ -657,6 +783,31 @@ mod tests {
         assert_eq!(
             out,
             "see [Evan](letswrite://entity/Evan%20Calder) now"
+        );
+    }
+
+    #[test]
+    fn wiki_links_support_colon_space_display() {
+        // The Confirm-from-suggestion flow rewrites a found name to
+        // `[[Entity: matched]]`, keeping the writer's original word as
+        // the display text. Preview should show "Evan", not the full
+        // entity name.
+        let out = rewrite_wiki_links("see [[Evan Calder: Evan]] now");
+        assert_eq!(
+            out,
+            "see [Evan](letswrite://entity/Evan%20Calder) now"
+        );
+    }
+
+    #[test]
+    fn wiki_links_bare_colon_is_not_a_separator() {
+        // A wiki-link whose target genuinely contains a colon (no
+        // following space) must not be split — common for titles like
+        // "Chapter 1: Quiet Week" used as a link target.
+        let out = rewrite_wiki_links("see [[Chapter:Intro]] now");
+        assert_eq!(
+            out,
+            "see [Chapter:Intro](letswrite://entity/Chapter:Intro) now"
         );
     }
 

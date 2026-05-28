@@ -175,9 +175,15 @@ impl App {
                 Task::none()
             }
             Message::Editor(msg) => {
+                // Re-detect mentions after a save (the body changed) AND
+                // after a fresh load (offsets in the DB may be stale from
+                // a previous session, or a sibling tool edited the file).
+                // Either way, the suggestion list is only as good as the
+                // most recent scan against the current body.
                 let is_save = matches!(msg, editor::Message::Saved(Ok(())));
+                let is_load = matches!(msg, editor::Message::Loaded(Ok(_)));
                 let task = self.editor.update(msg).map(Message::Editor);
-                if is_save {
+                if is_save || is_load {
                     self.run_mention_detection();
                 }
                 self.refresh_entities_in_scene();
@@ -537,6 +543,13 @@ impl App {
 
     fn handle_assistant_message(&mut self, msg: assistant::Message) -> Task<Message> {
         let is_api_submit = matches!(msg, assistant::Message::ApiKeySubmit);
+        // Re-detect mentions when the user opens the Suggestions tab so
+        // they always see results for the current buffer, not the state
+        // as of the last autosave. Cheap: scan + replace name_match rows.
+        let is_suggestions_tab = matches!(
+            &msg,
+            assistant::Message::TabSelected(assistant::Tab::Suggestions),
+        );
         let confirm_id = match &msg {
             assistant::Message::SuggestionConfirm(id) => Some(*id),
             _ => None,
@@ -552,6 +565,9 @@ impl App {
         let context = self.build_assistant_context();
         let task = self.assistant.update(msg, context).map(Message::Assistant);
         let mut tasks: Vec<Task<Message>> = vec![task];
+        if is_suggestions_tab {
+            self.run_mention_detection();
+        }
         if let Some(id) = jump_id {
             if let Some(jump_task) = self.jump_to_suggestion(id) {
                 tasks.push(jump_task);
@@ -559,8 +575,35 @@ impl App {
         }
         if let Some(id) = confirm_id {
             if let Some(project) = self.project.as_mut() {
-                if let Err(err) = letswrite_import::confirm(project, id) {
-                    tracing::warn!(%err, "confirm mention failed");
+                match letswrite_import::confirm(project, id) {
+                    Ok(Some(action)) => {
+                        // Splice the wiki-link into the editor buffer
+                        // only if the affected document is the one
+                        // currently open. Otherwise we'd need to load,
+                        // edit, save — for now we defer that case.
+                        let current_rel = self.editor.snapshot().rel_path;
+                        if current_rel.as_deref() == Some(action.rel_path.as_str()) {
+                            let splice_task = self
+                                .editor
+                                .splice_at(
+                                    action.start_offset,
+                                    action.end_offset,
+                                    &action.expected,
+                                    action.replacement,
+                                )
+                                .map(Message::Editor);
+                            tasks.push(splice_task);
+                        } else {
+                            tracing::warn!(
+                                rel = %action.rel_path,
+                                "confirm: target document not open, prose not rewritten"
+                            );
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::debug!(id, "confirm: mention already gone");
+                    }
+                    Err(err) => tracing::warn!(%err, "confirm mention failed"),
                 }
             }
             self.refresh_suggestions();
@@ -620,7 +663,7 @@ impl App {
 
         let jump_task = self
             .editor
-            .jump_to_offset(suggestion.start_offset)
+            .jump_to_range(suggestion.start_offset, suggestion.end_offset)
             .map(Message::Editor);
 
         if already_open {
@@ -684,7 +727,7 @@ impl App {
         };
         let conn = project.database().conn();
         let mut stmt = match conn.prepare(
-            "SELECT em.id, e.name, em.start_offset, em.end_offset
+            "SELECT em.id, e.name, e.kind, em.start_offset, em.end_offset
                FROM entity_mentions em
                JOIN entities e ON e.id = em.entity_id
                JOIN documents d ON d.id = em.document_id
@@ -705,8 +748,9 @@ impl App {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(2)?,
                     row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
                 ))
             },
         ) {
@@ -722,21 +766,20 @@ impl App {
         let abs = root.join(&rel);
         let body = std::fs::read_to_string(&abs).unwrap_or_default();
         rows.flatten()
-            .map(|(mention_id, entity_name, start, end)| {
+            .map(|(mention_id, entity_name, entity_kind, start, end)| {
                 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
                 let start_usize = start.max(0) as usize;
                 #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
                 let end_usize = end.max(0) as usize;
-                let matched_text =
-                    body.get(start_usize..end_usize).unwrap_or("").to_owned();
                 let context_snippet =
                     extract_snippet(&body, start_usize, end_usize);
                 assistant::PendingSuggestion {
                     mention_id,
                     entity_name,
-                    matched_text,
+                    entity_kind,
                     context_snippet,
                     start_offset: start_usize,
+                    end_offset: end_usize,
                     rel_path: rel.clone(),
                 }
             })

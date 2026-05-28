@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use letswrite_core::Project;
-use letswrite_import::{import_project, ImportReport};
+use letswrite_import::{confirm, detect_for_document, import_project, reject, ImportReport};
 use rusqlite::params;
 use tempfile::TempDir;
 
@@ -164,6 +164,124 @@ fn rerun_after_renaming_an_entity_does_not_orphan_mentions() {
     assert!(names.contains(&"Athena".to_owned()));
     assert!(!names.contains(&"Aletheia".to_owned()));
     assert!(report.unresolved_mentions >= 1);
+}
+
+#[test]
+fn reject_persists_across_redetection() {
+    // After a user rejects a name_match, re-running the detector on the
+    // same document must not re-create the suggestion. This was the
+    // original "suggestions reappear after every keystroke" bug.
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = init_project(&dir);
+    let _ = import_project(&mut p).unwrap();
+
+    // A chapter where "Evan" appears in prose (no wiki-link), so the
+    // detector will find it as a name_match suggestion.
+    write(dir.path(), "Chapters/Draft.md", "Evan walked into the office.\n");
+    p.reindex().unwrap();
+    let abs = dir.path().join("Chapters/Draft.md");
+
+    let inserted = detect_for_document(&mut p, &abs).unwrap();
+    assert_eq!(inserted, 1, "first scan finds the name_match");
+
+    let mention_id: i64 = p
+        .database()
+        .conn()
+        .query_row(
+            "SELECT em.id FROM entity_mentions em
+                JOIN documents d ON d.id = em.document_id
+                WHERE d.rel_path = 'Chapters/Draft.md' AND em.source = 'name_match'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    reject(&mut p, mention_id).unwrap();
+
+    let inserted_again = detect_for_document(&mut p, &abs).unwrap();
+    assert_eq!(
+        inserted_again, 0,
+        "rejection is remembered; the detector skips this name"
+    );
+}
+
+#[test]
+fn confirm_returns_action_with_aliased_replacement() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut p = init_project(&dir);
+    let _ = import_project(&mut p).unwrap();
+
+    // Two matches: one alias ("Evan") and one canonical ("Evan Calder").
+    // The alias should be confirmed with the colon-suffix; the canonical
+    // name should drop the redundant suffix.
+    write(
+        dir.path(),
+        "Chapters/Draft.md",
+        "Evan walked into the office. Later, Evan Calder spoke.\n",
+    );
+    p.reindex().unwrap();
+    let abs = dir.path().join("Chapters/Draft.md");
+    detect_for_document(&mut p, &abs).unwrap();
+
+    let mention_ids: Vec<(i64, String)> = p
+        .database()
+        .conn()
+        .prepare(
+            "SELECT em.id, em.matched_text FROM entity_mentions em
+                JOIN documents d ON d.id = em.document_id
+                WHERE d.rel_path = 'Chapters/Draft.md' AND em.source = 'name_match'
+                ORDER BY em.start_offset",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(mention_ids.len(), 2);
+    let (alias_id, _) = mention_ids
+        .iter()
+        .find(|(_, m)| m == "Evan")
+        .expect("alias mention exists")
+        .clone();
+    let (canon_id, _) = mention_ids
+        .iter()
+        .find(|(_, m)| m == "Evan Calder")
+        .expect("canonical mention exists")
+        .clone();
+
+    let alias_action = confirm(&mut p, alias_id)
+        .unwrap()
+        .expect("pending mention exists");
+    assert_eq!(alias_action.rel_path, "Chapters/Draft.md");
+    assert_eq!(
+        alias_action.replacement, "[[Evan Calder: Evan]]",
+        "alias keeps the colon suffix"
+    );
+    let body = fs::read_to_string(&abs).unwrap();
+    assert_eq!(
+        &body[alias_action.start_offset..alias_action.end_offset],
+        "Evan"
+    );
+
+    let canon_action = confirm(&mut p, canon_id)
+        .unwrap()
+        .expect("pending mention exists");
+    assert_eq!(
+        canon_action.replacement, "[[Evan Calder]]",
+        "canonical name skips the redundant alias suffix"
+    );
+
+    // Confirm deleted both name_match rows.
+    let remaining: i64 = p
+        .database()
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM entity_mentions
+                WHERE id IN (?1, ?2)",
+            params![alias_id, canon_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0, "confirm dropped both name_match rows");
 }
 
 #[test]

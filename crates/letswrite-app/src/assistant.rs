@@ -58,13 +58,17 @@ pub(crate) enum Tab {
 pub(crate) struct PendingSuggestion {
     pub mention_id: i64,
     pub entity_name: String,
-    pub matched_text: String,
+    /// Entity kind from the DB (`character`, `location`, `faction`,
+    /// `item`, `concept`) — drives the badge on the suggestion card so
+    /// the user sees at a glance what kind of reference was found.
+    pub entity_kind: String,
     /// Short prose context around the match for the confirmation UI.
     pub context_snippet: String,
-    /// Byte offset of the match in the document body — used by the shell
-    /// to jump the editor cursor to the right spot when the user clicks
-    /// the suggestion.
+    /// Byte offsets of the match in the document body — used by the shell
+    /// to select the matched span when the user clicks the suggestion, so
+    /// the jump target is visible at a glance.
     pub start_offset: usize,
+    pub end_offset: usize,
     /// Path of the document containing the match, relative to the project
     /// root. Lets the shell open it if it isn't already open.
     pub rel_path: String,
@@ -487,11 +491,18 @@ fn suggestions_view(suggestions: &[PendingSuggestion]) -> Element<'_, Message> {
 
 fn render_suggestion_card(s: &PendingSuggestion) -> Element<'_, Message> {
     let id = s.mention_id;
-    // The header is itself a button — clicking the matched-text line
-    // jumps the editor to the spot in prose. Confirm/Reject stay as
-    // their own buttons below.
+    // Header reads: [character ref] Evan Calder
+    // The kind badge tells the user immediately *what* was found
+    // (character/location/…); the name itself is the entity, not the
+    // raw matched span (which is often a truncated word fragment when
+    // offsets drift between save + edit).
+    let badge = container(text(suggestion_kind_label(&s.entity_kind)).size(10))
+        .padding([1, 6])
+        .style(suggestion_badge_style);
     let header = button(
-        text(format!("{} → {}", s.matched_text, s.entity_name)).size(13),
+        row![badge, text(s.entity_name.clone()).size(13)]
+            .spacing(6)
+            .align_y(iced::Alignment::Center),
     )
     .on_press(Message::SuggestionJump(id))
     .style(button::text)
@@ -524,6 +535,32 @@ fn render_suggestion_card(s: &PendingSuggestion) -> Element<'_, Message> {
     .style(assistant_bubble_style)
     .width(Length::Fill)
     .into()
+}
+
+/// Map a stored entity-kind string (matches the CHECK constraint in
+/// `V1__init.sql`) to the badge label shown on suggestion cards. Unknown
+/// kinds fall through to the raw string so a future schema addition is
+/// still readable rather than invisible.
+fn suggestion_kind_label(kind: &str) -> String {
+    let label = match kind {
+        "character" => "character ref",
+        "location" => "location ref",
+        "faction" => "faction ref",
+        "item" => "item ref",
+        "concept" => "concept ref",
+        other => return format!("[{other} ref]"),
+    };
+    format!("[{label}]")
+}
+
+fn suggestion_badge_style(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(iced::Background::Color(palette.secondary.weak.color)),
+        text_color: Some(palette.secondary.weak.text),
+        border: iced::Border { radius: 3.0.into(), ..Default::default() },
+        ..container::Style::default()
+    }
 }
 
 fn characters_view(entities: &[EntityInScene]) -> Element<'_, Message> {

@@ -16,7 +16,7 @@ mod entities;
 mod mentions;
 mod scenes;
 
-pub use detector::{confirm, detect_for_document, reject, Detection};
+pub use detector::{confirm, detect_for_document, reject, ConfirmAction, Detection};
 
 use rusqlite::params;
 
