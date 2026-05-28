@@ -15,16 +15,15 @@ use std::time::{Duration, Instant};
 // Status, the `default` style fn, …) and a free-fn constructor. We import
 // the module here and call the constructor as `text_editor::TextEditor::new`
 // via the local alias `editor_widget` below.
-use iced::widget::scrollable::AbsoluteOffset;
-use iced::widget::text_editor::{self, Action, Content, TextEditor};
+use iced::widget::text_editor::{self, Action, Content, Cursor, Position, TextEditor};
 use iced::widget::{self as widget, button, column, container, markdown, row, scrollable, text};
-
-/// Stable scroll-container id so `jump_to_offset` can address the outer
-/// scrollable from anywhere in the editor module.
-const fn editor_scroll_id() -> widget::Id {
-    widget::Id::new("letswrite-editor-scroll")
-}
 use iced::{Border, Element, Font, Length, Task, Theme};
+
+/// Stable id for the editor widget so we can `focus(...)` it after a
+/// programmatic cursor jump — without focus, the caret isn't painted.
+const fn editor_id() -> widget::Id {
+    widget::Id::new("letswrite-editor")
+}
 
 use letswrite_core::{Document, DocumentKind};
 use serde_yaml::Value as YamlValue;
@@ -173,38 +172,31 @@ impl Editor {
         }
     }
 
-    /// Move the cursor of the open buffer to `offset` and scroll its
-    /// outer container so the cursor's line is visible. `text_editor`
-    /// has no random-access cursor move, so we go to document-start then
-    /// walk forward; for big documents this is still fast (it's just
-    /// incrementing counters in cosmic-text).
+    /// Move the cursor of the open buffer to `offset` and let cosmic-text
+    /// auto-scroll the wrapped layout to keep it visible.
+    ///
+    /// Three things have to happen for the user to *see* the jump land:
+    /// 1. `Content::move_to` flips cosmic-text's `cursor_moved`, so the
+    ///    next layout pass calls `shape_until_cursor` and scrolls the
+    ///    wrapped buffer to bring the cursor's visual row into view.
+    /// 2. `Position::column` is a byte index into the logical line —
+    ///    same unit `offset_to_line_column` returns, so no conversion.
+    /// 3. The caret only paints when the editor is focused, so after
+    ///    moving we dispatch a `focus(editor_id)` task. Without this,
+    ///    a click on a Suggestions button leaves focus on the button,
+    ///    and the cursor is invisible at the (correctly scrolled) target.
     fn apply_jump(&mut self, offset: usize) -> Task<Message> {
-        use iced::widget::text_editor::{Action, Motion};
         let Some(open) = self.open.as_mut() else {
             return Task::none();
         };
         let body = open.content.text();
         let (line, column) = offset_to_line_column(&body, offset);
-        open.content.perform(Action::Move(Motion::DocumentStart));
-        for _ in 0..line {
-            open.content.perform(Action::Move(Motion::Down));
-        }
-        let line_text = body.lines().nth(line).unwrap_or("");
-        let char_col = byte_offset_to_char_index(line_text, column);
-        for _ in 0..char_col {
-            open.content.perform(Action::Move(Motion::Right));
-        }
-
-        // Scroll the outer scrollable so the cursor's line is visible.
-        // We approximate line height as font_size × 1.4 — Iced doesn't
-        // expose the actual cosmic-text line metrics. Leave a few lines
-        // of top padding so the cursor lands a comfortable distance
-        // below the top edge.
-        let line_height = f32::from(self.font_size) * 1.4;
-        #[allow(clippy::cast_precision_loss, clippy::suboptimal_flops)]
-        let y = ((line as f32) * line_height - line_height * 3.0).max(0.0);
-        tracing::debug!(line, column, y, "scrolling editor to jump target");
-        widget::operation::scroll_to(editor_scroll_id(), AbsoluteOffset { x: 0.0, y })
+        tracing::debug!(line, column, "moving cursor to jump target");
+        open.content.move_to(Cursor {
+            position: Position { line, column },
+            selection: None,
+        });
+        widget::operation::focus(editor_id())
     }
 
     pub(crate) const fn set_syntax_theme(&mut self, theme: SyntaxTheme) {
@@ -412,19 +404,16 @@ impl Editor {
     }
 
     fn editor_view<'a>(&self, open: &'a OpenDocument) -> Element<'a, Message> {
-        // Length::Shrink lets the editor grow to content height; we then
-        // let `scrollable` provide the visible scrollbar. With Length::Fill
-        // here, `text_editor` clamps to the parent and scrolls internally
-        // without surfacing a bar — matching the Preview look needs the
-        // outer scrollable.
-        //
-        // A line/paragraph gutter belongs here but cannot be built
-        // reliably against iced 0.13's text_editor — it doesn't expose
-        // visual-row metrics, so any side-mounted markers drift on wrap.
-        // See task #36 (custom canvas editor) for the real fix.
-        let editor = TextEditor::new(&open.content)
+        // `Length::Fill` lets `text_editor` clamp to the parent and own
+        // its scroll — cosmic-text scroll math is wrap-aware, so when
+        // `apply_jump` calls `move_to`, the editor brings the cursor's
+        // visual row into view automatically. Wrapping the editor in an
+        // outer `scrollable` would defeat this: the editor would expand
+        // to full content height and never scroll itself.
+        TextEditor::new(&open.content)
+            .id(editor_id())
             .placeholder("Start writing…")
-            .height(Length::Shrink)
+            .height(Length::Fill)
             .padding(16)
             .font(Font::DEFAULT)
             .size(f32::from(self.font_size))
@@ -433,11 +422,7 @@ impl Editor {
                 syntax::Settings { theme: self.syntax_theme },
                 format_highlight,
             )
-            .style(editor_borderless_style);
-        scrollable(editor)
-            .id(editor_scroll_id())
-            .height(Length::Fill)
-            .width(Length::Fill)
+            .style(editor_borderless_style)
             .into()
     }
 
@@ -468,14 +453,6 @@ fn offset_to_line_column(body: &str, offset: usize) -> (usize, usize) {
         }
     }
     (line, offset - line_start)
-}
-
-/// Convert a byte column into a char-grapheme-ish count for the given
-/// line. We need this because Iced's `Motion::Right` advances one
-/// grapheme at a time; we use chars as a close-enough proxy.
-fn byte_offset_to_char_index(line: &str, byte_col: usize) -> usize {
-    let byte_col = byte_col.min(line.len());
-    line[..byte_col].chars().count()
 }
 
 fn view_mode_toolbar(current: ViewMode) -> Element<'static, Message> {
