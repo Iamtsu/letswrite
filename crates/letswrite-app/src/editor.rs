@@ -62,7 +62,49 @@ pub(crate) struct OpenDocument {
     /// Hash of the body the cached items were parsed from. Cheap change
     /// detection that doesn't depend on a wall clock.
     preview_body_hash: u64,
+    /// Undo/redo history. Per-document because switching files shouldn't
+    /// let you undo into the previous file's prose.
+    history: History,
 }
+
+/// Bounded undo/redo history for one document.
+///
+/// The model is full-body snapshots, not diffs — prose-sized documents
+/// (tens of KB) make every snapshot trivial to keep in memory, and the
+/// implementation stays much simpler than text-aware deltas.
+///
+/// Coalescing: a run of consecutive typing collapses into a single
+/// undo entry. `pending` holds the pre-run snapshot; it's flushed into
+/// `undo` either after `COALESCE_IDLE` of no edits or when a non-typing
+/// event happens (splice, save, undo, redo). One snapshot per "logical
+/// edit boundary" — matches user expectation.
+#[derive(Debug, Default)]
+struct History {
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
+    /// Pre-state of an in-progress typing run, captured on the first
+    /// edit and promoted to `undo` once the run ends.
+    pending: Option<Snapshot>,
+    /// When the last edit landed — used to decide whether the next one
+    /// extends the run or starts a new one.
+    last_edit_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+struct Snapshot {
+    body: String,
+    cursor: Cursor,
+}
+
+/// Idle time after which a typing run is considered finished and the
+/// pending snapshot is flushed into the undo stack. Matches the
+/// autosave debounce so the two boundaries land together — undo
+/// granularity tracks what disk sees.
+const COALESCE_IDLE: Duration = Duration::from_millis(500);
+
+/// Maximum stack depth. 200 snapshots × 50 KB ≈ 10 MB upper bound for
+/// a chapter; comfortable for prose-sized work.
+const MAX_HISTORY: usize = 200;
 
 /// How the editor pane is split between the raw Markdown and the rendered
 /// preview.
@@ -74,6 +116,83 @@ pub(crate) enum ViewMode {
     Preview,
     /// Editor on the left, preview on the right, sharing the pane.
     Split,
+}
+
+impl History {
+    /// Record an edit. If `is_typing` and we're inside the coalesce
+    /// window, the existing pending snapshot stays (the run grows).
+    /// Otherwise we promote any pending snapshot to the undo stack
+    /// and capture `pre` as the new pending entry.
+    ///
+    /// Always clears the redo stack — a fresh edit invalidates any
+    /// future-history we'd been holding for redo (standard semantics).
+    fn record(&mut self, pre: Snapshot, is_typing: bool) {
+        let coalesce = is_typing
+            && self
+                .last_edit_at
+                .is_some_and(|t| t.elapsed() < COALESCE_IDLE)
+            && self.pending.is_some();
+        if !coalesce {
+            if let Some(p) = self.pending.take() {
+                self.push_undo(p);
+            }
+            self.pending = Some(pre);
+        }
+        self.last_edit_at = Some(Instant::now());
+        self.redo.clear();
+    }
+
+    /// Flush any pending typing-run snapshot into the undo stack.
+    /// Called on splice / save / undo / redo so the boundary between
+    /// "typing" and a discrete operation is preserved as one entry.
+    fn flush_pending(&mut self) {
+        if let Some(p) = self.pending.take() {
+            self.push_undo(p);
+        }
+        self.last_edit_at = None;
+    }
+
+    fn push_undo(&mut self, snap: Snapshot) {
+        self.undo.push(snap);
+        if self.undo.len() > MAX_HISTORY {
+            // Drop the oldest entry. `remove(0)` is O(n) but n is at
+            // most MAX_HISTORY (200) and this only fires once we cap;
+            // not worth a VecDeque rewrite.
+            self.undo.remove(0);
+        }
+    }
+
+    /// Returns the snapshot the editor should restore, if there's
+    /// anything to undo. The caller is expected to push the *current*
+    /// state onto `redo` before applying the returned snapshot.
+    fn pop_undo(&mut self, current: Snapshot) -> Option<Snapshot> {
+        // Any in-flight typing run must land in the undo stack first,
+        // otherwise the first Ctrl-Z would silently swallow that run.
+        self.flush_pending();
+        let popped = self.undo.pop()?;
+        self.redo.push(current);
+        Some(popped)
+    }
+
+    fn pop_redo(&mut self, current: Snapshot) -> Option<Snapshot> {
+        self.flush_pending();
+        let popped = self.redo.pop()?;
+        self.undo.push(current);
+        Some(popped)
+    }
+
+    // For a future toolbar / menu that wants to dim the Undo/Redo
+    // affordances when nothing is available. The keyboard shortcuts
+    // don't need it (a no-op Undo with no history is harmless).
+    #[allow(dead_code)]
+    fn can_undo(&self) -> bool {
+        !self.undo.is_empty() || self.pending.is_some()
+    }
+
+    #[allow(dead_code)]
+    fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
 }
 
 impl ViewMode {
@@ -138,6 +257,10 @@ pub(crate) enum Message {
     SetViewMode(ViewMode),
     /// User clicked a link in the rendered preview.
     LinkClicked(markdown::Uri),
+    /// Ctrl-Z — restore the most recent pre-edit snapshot.
+    Undo,
+    /// Ctrl-Shift-Z / Ctrl-Y — re-apply the last undone snapshot.
+    Redo,
 }
 
 /// Selection colour used during a Suggestions jump. The default theme
@@ -174,6 +297,12 @@ impl Editor {
     /// focus the editor, and re-center the line in the viewport. If no
     /// document is open yet, the range is stashed and applied after the
     /// next `Message::Loaded(Ok)`.
+    ///
+    /// Always focuses the editor. iced only paints the yellow selection
+    /// when focused (`text_editor.rs:1021`), so a "soft" select-without-
+    /// focus would be silently invisible — we tried that and reverted.
+    /// Callers that want to preserve another widget's focus must avoid
+    /// emitting a jump in the first place.
     pub(crate) fn jump_to_range(&mut self, start: usize, end: usize) -> Task<Message> {
         if self.open.is_some() {
             self.apply_jump(start, end)
@@ -299,6 +428,17 @@ impl Editor {
             );
             return Task::none();
         }
+        // System-driven splice (Confirm / Replace / Replace All): each
+        // splice is its own undo entry, separate from any typing run.
+        // `record(..., false)` flushes whatever was pending and pushes
+        // this pre-state as a discrete boundary, so Ctrl-Z reverses
+        // exactly one operation per click.
+        let pre = Snapshot {
+            body: body.clone(),
+            cursor: open.content.cursor(),
+        };
+        open.history.record(pre, false);
+        open.history.flush_pending();
         let (start_line, start_col) = offset_to_line_column(&body, start);
         let (end_line, end_col) = offset_to_line_column(&body, end);
         open.content.move_to(Cursor {
@@ -396,6 +536,18 @@ impl Editor {
                 // yellow highlight so a manual select-and-copy looks
                 // like a regular selection.
                 self.jump_highlight_active = false;
+                if is_edit {
+                    // Snapshot BEFORE the edit so undo can restore the
+                    // pre-state. Coalesce single-char edits into one
+                    // entry — the `is_typing` flag passes through to
+                    // `History::record` which decides whether to grow
+                    // the in-progress run or start a new one.
+                    let pre = Snapshot {
+                        body: open.content.text(),
+                        cursor: open.content.cursor(),
+                    };
+                    open.history.record(pre, is_typing_edit(&action));
+                }
                 open.content.perform(action);
                 if is_edit {
                     open.last_edit = Some(Instant::now());
@@ -417,6 +569,49 @@ impl Editor {
                 }
                 Task::none()
             }
+            Message::Undo => {
+                let Some(open) = self.open.as_mut() else {
+                    return Task::none();
+                };
+                let current = Snapshot {
+                    body: open.content.text(),
+                    cursor: open.content.cursor(),
+                };
+                if let Some(prev) = open.history.pop_undo(current) {
+                    restore_snapshot(open, &prev);
+                    self.jump_highlight_active = false;
+                    // Treat as an edit-equivalent: mark dirty and let
+                    // autosave persist. If the user undoes back to the
+                    // disk state, autosave is a cheap no-op.
+                    open.last_edit = Some(Instant::now());
+                    open.is_dirty = true;
+                    return Task::perform(
+                        async { tokio::time::sleep(AUTOSAVE_IDLE).await },
+                        |()| Message::AutosaveTick,
+                    );
+                }
+                Task::none()
+            }
+            Message::Redo => {
+                let Some(open) = self.open.as_mut() else {
+                    return Task::none();
+                };
+                let current = Snapshot {
+                    body: open.content.text(),
+                    cursor: open.content.cursor(),
+                };
+                if let Some(next) = open.history.pop_redo(current) {
+                    restore_snapshot(open, &next);
+                    self.jump_highlight_active = false;
+                    open.last_edit = Some(Instant::now());
+                    open.is_dirty = true;
+                    return Task::perform(
+                        async { tokio::time::sleep(AUTOSAVE_IDLE).await },
+                        |()| Message::AutosaveTick,
+                    );
+                }
+                Task::none()
+            }
             Message::Loaded(Ok(loaded)) => {
                 let LoadedFile { abs_path, project_root, document } = loaded;
                 let content = Content::with_text(&document.body);
@@ -433,6 +628,7 @@ impl Editor {
                     is_dirty: false,
                     preview_items,
                     preview_body_hash,
+                    history: History::default(),
                 };
                 tracing::info!(
                     rel_path = %open.rel_path,
@@ -441,6 +637,9 @@ impl Editor {
                 );
                 self.open = Some(open);
                 if let Some((start, end)) = self.pending_jump_range.take() {
+                    // Pending jumps come from a fresh document load,
+                    // where the user expects to land in the editor —
+                    // focus it like the explicit Jump path does.
                     return self.apply_jump(start, end);
                 }
                 Task::none()
@@ -554,6 +753,29 @@ impl Editor {
 
 /// Translate a byte offset into the document body into `(line, byte_column)`.
 /// Lines are split on `\n`; `byte_column` is the byte index inside the line.
+/// Does this action behave like a continuous typing run for undo
+/// coalescing purposes? Single-char insert/delete should fold into the
+/// pending entry; paste / enter / indent are discrete events.
+const fn is_typing_edit(action: &Action) -> bool {
+    use iced::widget::text_editor::Edit;
+    matches!(
+        action,
+        Action::Edit(Edit::Insert(_) | Edit::Backspace | Edit::Delete),
+    )
+}
+
+/// Replace the open document's buffer with `snap.body` and restore the
+/// cursor. cosmic-text's `Content` has no "set text" method, so we
+/// allocate a fresh `Content::with_text(...)` and swap it in. The
+/// preview cache is invalidated so the next paint reparses.
+fn restore_snapshot(open: &mut OpenDocument, snap: &Snapshot) {
+    open.content = Content::with_text(&snap.body);
+    open.content.move_to(snap.cursor);
+    let (items, hash) = parse_preview(&snap.body);
+    open.preview_items = items;
+    open.preview_body_hash = hash;
+}
+
 fn offset_to_line_column(body: &str, offset: usize) -> (usize, usize) {
     let offset = offset.min(body.len());
     let mut line = 0;
@@ -839,5 +1061,112 @@ mod tests {
         assert!(snap.rel_path.is_none());
         assert!(!snap.is_dirty);
         assert_eq!(snap.word_count, 0);
+    }
+
+    fn snap(body: &str) -> Snapshot {
+        Snapshot {
+            body: body.to_owned(),
+            cursor: Cursor {
+                position: Position { line: 0, column: 0 },
+                selection: None,
+            },
+        }
+    }
+
+    #[test]
+    fn typing_run_within_coalesce_window_keeps_one_pending_entry() {
+        // Three consecutive `is_typing` records inside COALESCE_IDLE
+        // should not grow the undo stack — they all fold into the
+        // first pending snapshot. Flushing afterwards yields a single
+        // undo entry holding the pre-run state.
+        let mut h = History::default();
+        h.record(snap("a"), true);
+        h.record(snap("ab"), true);
+        h.record(snap("abc"), true);
+        assert_eq!(h.undo.len(), 0, "still pending, nothing promoted yet");
+        assert!(h.pending.is_some());
+        h.flush_pending();
+        assert_eq!(h.undo.len(), 1);
+        assert_eq!(h.undo[0].body, "a", "first pre-state survives the run");
+    }
+
+    #[test]
+    fn non_typing_record_starts_a_new_undo_boundary() {
+        // A paste / splice during a typing run flushes whatever was
+        // pending and pushes its own pre-state as a discrete entry.
+        let mut h = History::default();
+        h.record(snap("foo"), true);
+        h.record(snap("foobar"), true);
+        h.record(snap("foobar"), false); // splice
+        assert_eq!(h.undo.len(), 1, "typing run flushed by the splice");
+        assert!(h.pending.is_some(), "splice's pre-state is now pending");
+    }
+
+    #[test]
+    fn redo_stack_is_cleared_on_new_edit() {
+        // Standard undo semantics: editing after an undo discards
+        // any redo future, otherwise the redo would apply a stale
+        // state on top of the new branch.
+        let mut h = History::default();
+        h.record(snap("a"), true);
+        h.flush_pending();
+        let popped = h.pop_undo(snap("b"));
+        assert!(popped.is_some());
+        assert_eq!(h.redo.len(), 1);
+        h.record(snap("c"), true);
+        assert!(h.redo.is_empty(), "new edit kills the redo future");
+    }
+
+    #[test]
+    fn undo_then_redo_round_trips() {
+        let mut h = History::default();
+        h.record(snap("v1"), true);
+        h.flush_pending();
+        let undone = h.pop_undo(snap("v2"));
+        assert_eq!(undone.unwrap().body, "v1");
+        let redone = h.pop_redo(snap("v1"));
+        assert_eq!(redone.unwrap().body, "v2");
+    }
+
+    #[test]
+    fn undo_flushes_in_flight_typing_before_popping() {
+        // If the user types `abc` then hits Ctrl-Z, the run must
+        // promote into undo first; otherwise the first Ctrl-Z would
+        // pop something OLDER than the typing-pre-state and the typed
+        // text would silently survive.
+        let mut h = History::default();
+        h.record(snap(""), true);
+        h.record(snap("a"), true);
+        h.record(snap("ab"), true);
+        // No flush — simulate Ctrl-Z mid-run.
+        let undone = h.pop_undo(snap("abc"));
+        assert_eq!(undone.unwrap().body, "");
+        assert!(h.pending.is_none(), "run was flushed inside pop_undo");
+        assert_eq!(h.redo.len(), 1);
+        assert_eq!(h.redo[0].body, "abc");
+    }
+
+    #[test]
+    fn undo_stack_caps_at_max_history() {
+        let mut h = History::default();
+        for i in 0..(MAX_HISTORY + 50) {
+            h.push_undo(snap(&i.to_string()));
+        }
+        assert_eq!(h.undo.len(), MAX_HISTORY);
+        // Oldest entry should be MAX_HISTORY+50 - MAX_HISTORY = 50.
+        assert_eq!(h.undo[0].body, "50");
+    }
+
+    #[test]
+    fn is_typing_edit_distinguishes_typing_from_discrete() {
+        use iced::widget::text_editor::Edit;
+        use std::sync::Arc;
+        assert!(is_typing_edit(&Action::Edit(Edit::Insert('a'))));
+        assert!(is_typing_edit(&Action::Edit(Edit::Backspace)));
+        assert!(is_typing_edit(&Action::Edit(Edit::Delete)));
+        assert!(!is_typing_edit(&Action::Edit(Edit::Paste(Arc::new(
+            "x".to_owned(),
+        )))));
+        assert!(!is_typing_edit(&Action::Edit(Edit::Enter)));
     }
 }

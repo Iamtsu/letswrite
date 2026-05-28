@@ -1005,6 +1005,25 @@ fn global_event_filter(
                 Key::Character(c) if modifiers.control() && c.eq_ignore_ascii_case("h") => {
                     Some(Message::OpenSearchPanel(search::Mode::Replace))
                 }
+                // Ctrl-Z = undo; Ctrl-Shift-Z and Ctrl-Y are both
+                // common redo shortcuts so accept either.
+                Key::Character(c)
+                    if modifiers.control()
+                        && !modifiers.shift()
+                        && c.eq_ignore_ascii_case("z") =>
+                {
+                    Some(Message::Editor(editor::Message::Undo))
+                }
+                Key::Character(c)
+                    if modifiers.control()
+                        && modifiers.shift()
+                        && c.eq_ignore_ascii_case("z") =>
+                {
+                    Some(Message::Editor(editor::Message::Redo))
+                }
+                Key::Character(c) if modifiers.control() && c.eq_ignore_ascii_case("y") => {
+                    Some(Message::Editor(editor::Message::Redo))
+                }
                 Key::Named(Named::Escape) => Some(Message::CloseSearchPanel),
                 _ => None,
             }
